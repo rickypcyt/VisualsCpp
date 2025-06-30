@@ -1,0 +1,57 @@
+{
+    "colorLeft": [
+        0.6356884837150574,
+        0.6145951151847839,
+        0.1471485197544098
+    ],
+    "colorRight": [
+        0.567233681678772,
+        0.3181982934474945,
+        0.44148626923561096
+    ],
+    "colorTop": [
+        0.8394138216972351,
+        0.2946564257144928,
+        0.8027521967887878
+    ],
+    "groupAngleCenter": 5.093172073364258,
+    "groupAngleLeft": 4.820764541625977,
+    "groupAngleRight": 0.5085945129394531,
+    "numCenter": 1,
+    "numLeft": 15,
+    "numRight": 6,
+    "randomLimits": {
+        "colorMax": 1.0,
+        "colorMin": 0.0,
+        "numCenterMax": 15,
+        "numCenterMin": 0,
+        "numLeftMax": 15,
+        "numLeftMin": 0,
+        "numRightMax": 15,
+        "numRightMin": 1,
+        "segMax": 128,
+        "segMin": 120,
+        "shapeMax": 2,
+        "shapeMin": 0,
+        "sizeMax": 0.09000000357627869,
+        "sizeMin": 0.009999999776482582,
+        "speedMax": 243.89999389648438,
+        "speedMin": 10.0,
+        "sxMax": 2.0,
+        "sxMin": 0.10000000149011612,
+        "syMax": 2.0,
+        "syMin": 0.10000000149011612,
+        "txMax": 1.0,
+        "txMin": -1.0,
+        "tyMax": 1.0,
+        "tyMin": -1.0
+    },
+    "randomize": true,
+    "rotationSpeed": 185.8806915283203,
+    "scaleX": 0.6918652057647705,
+    "scaleY": 1.9068145751953125,
+    "shapeType": 1,
+    "translateX": 0.5190303325653076,
+    "translateY": -0.8744479417800903,
+    "triSize": 0.03668554872274399
+}
