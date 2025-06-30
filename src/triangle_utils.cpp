@@ -1,13 +1,13 @@
 #include "triangle_utils.h"
 
-void createTriangle(GLuint& VAO, GLuint& VBO, float width, float height) {
+void createTriangle(GLuint& VAO, GLuint& VBO, float width, float height, float colorTop[3], float colorLeft[3], float colorRight[3]) {
     float halfWidth = width / 2.0f;
     float yOffset = height / 6.0f;
     float vertices[] = {
-        // posiciones                              // colores
-         0.0f,   height / 2.0f - yOffset, 0.0f,    1.0f, 0.0f, 0.0f, // top (rojo)
-        -halfWidth, -height / 2.0f - yOffset, 0.0f, 0.0f, 1.0f, 0.0f, // left (verde)
-         halfWidth, -height / 2.0f - yOffset, 0.0f, 0.0f, 0.0f, 1.0f  // right (azul)
+        // posiciones                  // colores
+         0.0f,   height / 2.0f - yOffset, 0.0f,  colorTop[0], colorTop[1], colorTop[2], // top
+        -halfWidth, -height / 2.0f - yOffset, 0.0f,  colorLeft[0], colorLeft[1], colorLeft[2], // left
+         halfWidth, -height / 2.0f - yOffset, 0.0f,  colorRight[0], colorRight[1], colorRight[2]  // right
     };
     glGenVertexArrays(1, &VAO);
     glGenBuffers(1, &VBO);
