@@ -60,6 +60,24 @@ void createShape(GLuint& VAO, GLuint& VBO, int shapeType, float size, float colo
             vertices.push_back(g);
             vertices.push_back(b);
         }
+    } else if (shapeType == 3) { // Línea
+        // Línea simple horizontal
+        vertices = {
+            -half, 0.0f, 0.0f, colorLeft[0], colorLeft[1], colorLeft[2],
+             half, 0.0f, 0.0f, colorRight[0], colorRight[1], colorRight[2]
+        };
+    } else if (shapeType == 4) { // Líneas largas
+        // 6 líneas cruzando el origen en diferentes ángulos
+        for (int i = 0; i < 6; ++i) {
+            float angle = (float)i * M_PI / 6.0f;
+            float x = half * cos(angle);
+            float y = half * sin(angle);
+            // Línea desde -x,-y a +x,+y
+            vertices.push_back(-x); vertices.push_back(-y); vertices.push_back(0.0f);
+            vertices.push_back(colorLeft[0]); vertices.push_back(colorLeft[1]); vertices.push_back(colorLeft[2]);
+            vertices.push_back(x); vertices.push_back(y); vertices.push_back(0.0f);
+            vertices.push_back(colorRight[0]); vertices.push_back(colorRight[1]); vertices.push_back(colorRight[2]);
+        }
     }
     glGenVertexArrays(1, &VAO);
     glGenBuffers(1, &VBO);

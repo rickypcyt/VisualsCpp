@@ -69,6 +69,26 @@ struct RandomLimits {
     int segMin = 8, segMax = 128;
 };
 
+// Estructura de flags para randomización selectiva
+struct RandomAffectFlags {
+    bool triSize = true;
+    bool rotationSpeed = true;
+    bool angle = true;
+    bool translateX = true;
+    bool translateY = true;
+    bool scaleX = true;
+    bool scaleY = true;
+    bool colorTop = true;
+    bool colorLeft = true;
+    bool colorRight = true;
+    bool shapeType = true;
+    bool nSegments = true;
+    bool groupAngle = true;
+    bool numCenter = true;
+    bool numRight = true;
+    bool numLeft = true;
+};
+
 // Estructura para presets
 struct Preset {
     float triSize, rotationSpeed, translateX, translateY, scaleX, scaleY;
@@ -152,7 +172,8 @@ void savePreset(const char* filename,
                 ImVec4 colorTop, ImVec4 colorLeft, ImVec4 colorRight,
                 int numCenter, int numRight, int numLeft, int shapeType,
                 float groupAngleCenter, float groupAngleRight, float groupAngleLeft,
-                bool randomize, const RandomLimits& randomLimits) {
+                bool randomize, const RandomLimits& randomLimits,
+                const RandomAffectFlags& randomAffect) {
     json j;
     j["triSize"] = triSize;
     j["rotationSpeed"] = rotationSpeed;
@@ -185,6 +206,24 @@ void savePreset(const char* filename,
         {"shapeMin", randomLimits.shapeMin}, {"shapeMax", randomLimits.shapeMax},
         {"segMin", randomLimits.segMin}, {"segMax", randomLimits.segMax}
     };
+    j["randomAffect"] = {
+        {"triSize", randomAffect.triSize},
+        {"rotationSpeed", randomAffect.rotationSpeed},
+        {"angle", randomAffect.angle},
+        {"translateX", randomAffect.translateX},
+        {"translateY", randomAffect.translateY},
+        {"scaleX", randomAffect.scaleX},
+        {"scaleY", randomAffect.scaleY},
+        {"colorTop", randomAffect.colorTop},
+        {"colorLeft", randomAffect.colorLeft},
+        {"colorRight", randomAffect.colorRight},
+        {"shapeType", randomAffect.shapeType},
+        {"nSegments", randomAffect.nSegments},
+        {"groupAngle", randomAffect.groupAngle},
+        {"numCenter", randomAffect.numCenter},
+        {"numRight", randomAffect.numRight},
+        {"numLeft", randomAffect.numLeft}
+    };
     std::ofstream out(filename);
     out << j.dump(4);
 }
@@ -194,7 +233,8 @@ void loadPreset(const char* filename,
                 ImVec4& colorTop, ImVec4& colorLeft, ImVec4& colorRight,
                 int& numCenter, int& numRight, int& numLeft, int& shapeType,
                 float& groupAngleCenter, float& groupAngleRight, float& groupAngleLeft,
-                bool& randomize, RandomLimits& randomLimits) {
+                bool& randomize, RandomLimits& randomLimits,
+                RandomAffectFlags& randomAffect) {
     std::ifstream in(filename);
     if (!in) return;
     json j;
@@ -246,7 +286,50 @@ void loadPreset(const char* filename,
         randomLimits.segMin = rl.value("segMin", randomLimits.segMin);
         randomLimits.segMax = rl.value("segMax", randomLimits.segMax);
     }
+    if (j.contains("randomAffect")) {
+        auto ra = j["randomAffect"];
+        randomAffect.triSize = ra.value("triSize", randomAffect.triSize);
+        randomAffect.rotationSpeed = ra.value("rotationSpeed", randomAffect.rotationSpeed);
+        randomAffect.angle = ra.value("angle", randomAffect.angle);
+        randomAffect.translateX = ra.value("translateX", randomAffect.translateX);
+        randomAffect.translateY = ra.value("translateY", randomAffect.translateY);
+        randomAffect.scaleX = ra.value("scaleX", randomAffect.scaleX);
+        randomAffect.scaleY = ra.value("scaleY", randomAffect.scaleY);
+        randomAffect.colorTop = ra.value("colorTop", randomAffect.colorTop);
+        randomAffect.colorLeft = ra.value("colorLeft", randomAffect.colorLeft);
+        randomAffect.colorRight = ra.value("colorRight", randomAffect.colorRight);
+        randomAffect.shapeType = ra.value("shapeType", randomAffect.shapeType);
+        randomAffect.nSegments = ra.value("nSegments", randomAffect.nSegments);
+        randomAffect.groupAngle = ra.value("groupAngle", randomAffect.groupAngle);
+        randomAffect.numCenter = ra.value("numCenter", randomAffect.numCenter);
+        randomAffect.numRight = ra.value("numRight", randomAffect.numRight);
+        randomAffect.numLeft = ra.value("numLeft", randomAffect.numLeft);
+    }
 }
+
+// Añadir tipo de figura línea
+enum ShapeType { SHAPE_TRIANGLE = 0, SHAPE_SQUARE, SHAPE_CIRCLE, SHAPE_LINE, SHAPE_LONG_LINES, SHAPE_COUNT };
+const char* shapeNames[] = {"Triángulo", "Cuadrado", "Círculo", "Línea", "Líneas largas"};
+
+// Estructura de parámetros de un objeto visual
+struct VisualObjectParams {
+    float triSize = 0.8f;
+    float rotationSpeed = 90.0f;
+    float angle = 0.0f;
+    float translateX = 0.0f, translateY = 0.0f;
+    float scaleX = 1.0f, scaleY = 1.0f;
+    ImVec4 colorTop = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
+    ImVec4 colorLeft = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
+    ImVec4 colorRight = ImVec4(0.0f, 0.0f, 1.0f, 1.0f);
+    int shapeType = SHAPE_TRIANGLE;
+    int nSegments = 32;
+    float groupAngle = 0.0f;
+};
+
+// Estructura de objetivos random para suavidad
+struct VisualObjectTargets {
+    VisualObjectParams target;
+};
 
 int main() {
     if (!glfwInit()) {
@@ -279,6 +362,9 @@ int main() {
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330");
 
+    // Declarar randomAffect para randomización selectiva
+    RandomAffectFlags randomAffect;
+
     // Triángulo
     float triSize = 0.8f;
     float prevSize = triSize;
@@ -310,6 +396,16 @@ int main() {
     int nSegments = 3;
     // Declare randomLimits
     RandomLimits randomLimits;
+    // Objetivos random para suavidad
+    float targetTriSize = triSize;
+    float targetRotationSpeed = rotationSpeed;
+    float targetTranslateX = translateX, targetTranslateY = translateY;
+    float targetScaleX = scaleX, targetScaleY = scaleY;
+    ImVec4 targetColorTop = colorTop, targetColorLeft = colorLeft, targetColorRight = colorRight;
+    int targetNumCenter = numCenter, targetNumRight = numRight, targetNumLeft = numLeft;
+    int targetShapeType = shapeType;
+    float targetGroupAngleCenter = groupAngleCenter, targetGroupAngleRight = groupAngleRight, targetGroupAngleLeft = groupAngleLeft;
+    int targetNSegments = nSegments;
     GLuint shaderProgram = createShaderProgram(vertexShaderSource, fragmentShaderSource);
     GLuint VAO, VBO;
     float colorTopArr[3] = {colorTop.x, colorTop.y, colorTop.z};
@@ -321,7 +417,45 @@ int main() {
     int numTriangles = 1;
 
     // Al iniciar el programa, intenta cargar preset.json
-    loadPreset("preset.json", triSize, rotationSpeed, translateX, translateY, scaleX, scaleY, colorTop, colorLeft, colorRight, numCenter, numRight, numLeft, shapeType, groupAngleCenter, groupAngleRight, groupAngleLeft, randomize, randomLimits);
+    loadPreset("preset.json", triSize, rotationSpeed, translateX, translateY, scaleX, scaleY, colorTop, colorLeft, colorRight, numCenter, numRight, numLeft, shapeType, groupAngleCenter, groupAngleRight, groupAngleLeft, randomize, randomLimits, randomAffect);
+
+    // Grupos: centro, derecha, izquierda
+    const int MAX_OBJECTS = 30;
+    struct VisualGroup {
+        std::vector<VisualObjectParams> objects;
+        std::vector<VisualObjectTargets> targets;
+        int numObjects = 1;
+        float groupAngle = 0.0f;
+    };
+    VisualGroup groups[3]; // 0: centro, 1: derecha, 2: izquierda
+
+    // Inicializar grupos
+    for (int g = 0; g < 3; ++g) {
+        groups[g].numObjects = (g == 0) ? 1 : 0;
+        groups[g].groupAngle = 0.0f;
+        groups[g].objects.resize(MAX_OBJECTS);
+        groups[g].targets.resize(MAX_OBJECTS);
+    }
+
+    // Variables globales para animación
+    bool autoGroupRotate = false;
+
+    // En main(), variable para limitar a RGB puros
+    bool onlyRGB = false;
+
+    // 1. Flags de randomización por grupo
+    static bool randomShapeType[3] = {true, true, true};
+    static bool randomNSegments[3] = {true, true, true};
+
+    // Declarar lambdas antes del bucle de randomización
+    auto frand = []() { return static_cast<float>(rand())/RAND_MAX; };
+    auto near = [](float a, float b, float eps=0.01f) { return fabs(a-b) < eps; };
+    auto nearInt = [](int a, int b) { return a == b; };
+
+    // 1. Parámetro de separación de grupos
+    static float groupSeparation = 1.0f;
+    static float targetGroupSeparation = 1.0f;
+    bool randomizeGroupSeparation = false;
 
     while (!glfwWindowShouldClose(window)) {
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
@@ -342,10 +476,10 @@ int main() {
         // Ventana izquierda: controles principales
         ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Once);
         ImGui::Begin("Triángulo");
-        ImGui::SliderFloat("Tamaño", &triSize, 0.1f, 2.0f, "%.2f");
-        ImGui::SliderAngle("Rotación", &angle, 0.0f, 360.0f);
+        ImGui::SliderFloat("Tamaño", &groups[0].objects[0].triSize, 0.1f, 2.0f, "%.2f");
+        ImGui::SliderAngle("Rotación", &groups[0].objects[0].angle, 0.0f, 360.0f);
         ImGui::Checkbox("Rotación automática", &autoRotate);
-        ImGui::SliderFloat("Velocidad de rotación (°/s)", &rotationSpeed, 10.0f, 720.0f, "%.1f");
+        ImGui::SliderFloat("Velocidad de rotación (°/s)", &groups[0].objects[0].rotationSpeed, 10.0f, 720.0f, "%.1f");
         ImGui::SliderFloat("BPM", &bpm, 30.0f, 300.0f, "%.1f");
         ImGui::Text("Beat phase: %.2f", beatPhase);
         const char* fpsModes[] = { "VSync", "Ilimitado", "Custom" };
@@ -361,14 +495,14 @@ int main() {
         ImGui::SetNextWindowPos(ImVec2(width - 350, 10), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(340, 0), ImGuiCond_Always);
         ImGui::Begin("Opciones Avanzadas");
-        ImGui::ColorEdit3("Color vértice superior", (float*)&colorTop);
-        ImGui::ColorEdit3("Color vértice izquierdo", (float*)&colorLeft);
-        ImGui::ColorEdit3("Color vértice derecho", (float*)&colorRight);
+        ImGui::ColorEdit3("Color vértice superior", (float*)&groups[0].objects[0].colorTop);
+        ImGui::ColorEdit3("Color vértice izquierdo", (float*)&groups[0].objects[0].colorLeft);
+        ImGui::ColorEdit3("Color vértice derecho", (float*)&groups[0].objects[0].colorRight);
         ImGui::Separator();
-        ImGui::SliderFloat("Mover X", &translateX, -1.0f, 1.0f, "%.2f");
-        ImGui::SliderFloat("Mover Y", &translateY, -1.0f, 1.0f, "%.2f");
-        ImGui::SliderFloat("Escala X", &scaleX, 0.1f, 2.0f, "%.2f");
-        ImGui::SliderFloat("Escala Y", &scaleY, 0.1f, 2.0f, "%.2f");
+        ImGui::SliderFloat("Mover X", &groups[0].objects[0].translateX, -1.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Mover Y", &groups[0].objects[0].translateY, -1.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Escala X", &groups[0].objects[0].scaleX, 0.1f, 2.0f, "%.2f");
+        ImGui::SliderFloat("Escala Y", &groups[0].objects[0].scaleY, 0.1f, 2.0f, "%.2f");
         ImGui::Checkbox("Animar color", &animateColor);
         ImGui::Separator();
         ImGui::Text("OpenGL: %s", (const char*)glGetString(GL_VERSION));
@@ -376,7 +510,7 @@ int main() {
         ImGui::Text("Resolución: %dx%d", width, height);
         ImGui::Separator();
         ImGui::SliderInt("Cantidad de triángulos", &numTriangles, 1, 10);
-        ImGui::Combo("Figura", &shapeType, shapeNames, IM_ARRAYSIZE(shapeNames));
+        ImGui::Combo("Figura", &groups[0].objects[0].shapeType, shapeNames, IM_ARRAYSIZE(shapeNames));
         ImGui::SliderAngle("Rotación centro", &groupAngleCenter, 0.0f, 360.0f);
         ImGui::SliderAngle("Rotación derecha", &groupAngleRight, 0.0f, 360.0f);
         ImGui::SliderAngle("Rotación izquierda", &groupAngleLeft, 0.0f, 360.0f);
@@ -386,26 +520,26 @@ int main() {
         ImGui::SliderInt("Derecha", &numRight, 0, 30);
         ImGui::SliderInt("Izquierda", &numLeft, 0, 30);
         if (ImGui::Button("Reset")) {
-            triSize = 0.8f;
-            rotationSpeed = 90.0f;
-            colorTop = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
-            colorLeft = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
-            colorRight = ImVec4(0.0f, 0.0f, 1.0f, 1.0f);
-            translateX = 0.0f; translateY = 0.0f;
-            scaleX = 1.0f; scaleY = 1.0f;
+            groups[0].objects[0].triSize = 0.8f;
+            groups[0].objects[0].rotationSpeed = 90.0f;
+            groups[0].objects[0].colorTop = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
+            groups[0].objects[0].colorLeft = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
+            groups[0].objects[0].colorRight = ImVec4(0.0f, 0.0f, 1.0f, 1.0f);
+            groups[0].objects[0].translateX = 0.0f; groups[0].objects[0].translateY = 0.0f;
+            groups[0].objects[0].scaleX = 1.0f; groups[0].objects[0].scaleY = 1.0f;
             numCenter = 1; numRight = 0; numLeft = 0;
-            shapeType = 0;
+            groups[0].objects[0].shapeType = 0;
             groupAngleCenter = 0.0f; groupAngleRight = 0.0f; groupAngleLeft = 0.0f;
             randomize = false;
             randomLimits = RandomLimits();
         }
         ImGui::SameLine();
         if (ImGui::Button("Guardar preset")) {
-            savePreset("preset.json", triSize, rotationSpeed, translateX, translateY, scaleX, scaleY, colorTop, colorLeft, colorRight, numCenter, numRight, numLeft, shapeType, groupAngleCenter, groupAngleRight, groupAngleLeft, randomize, randomLimits);
+            savePreset("preset.json", groups[0].objects[0].triSize, groups[0].objects[0].rotationSpeed, groups[0].objects[0].translateX, groups[0].objects[0].translateY, groups[0].objects[0].scaleX, groups[0].objects[0].scaleY, groups[0].objects[0].colorTop, groups[0].objects[0].colorLeft, groups[0].objects[0].colorRight, numCenter, numRight, numLeft, groups[0].objects[0].shapeType, groupAngleCenter, groupAngleRight, groupAngleLeft, randomize, randomLimits, randomAffect);
         }
         ImGui::SameLine();
         if (ImGui::Button("Cargar preset")) {
-            loadPreset("preset.json", triSize, rotationSpeed, translateX, translateY, scaleX, scaleY, colorTop, colorLeft, colorRight, numCenter, numRight, numLeft, shapeType, groupAngleCenter, groupAngleRight, groupAngleLeft, randomize, randomLimits);
+            loadPreset("preset.json", groups[0].objects[0].triSize, groups[0].objects[0].rotationSpeed, groups[0].objects[0].translateX, groups[0].objects[0].translateY, groups[0].objects[0].scaleX, groups[0].objects[0].scaleY, groups[0].objects[0].colorTop, groups[0].objects[0].colorLeft, groups[0].objects[0].colorRight, numCenter, numRight, numLeft, groups[0].objects[0].shapeType, groupAngleCenter, groupAngleRight, groupAngleLeft, randomize, randomLimits, randomAffect);
         }
         if (ImGui::Button("Captura de pantalla")) {
             int w, h;
@@ -431,6 +565,27 @@ int main() {
         ImGui::SetNextWindowSize(ImVec2(340, 390), ImGuiCond_Once);
         ImGui::Begin("Randomización");
         ImGui::Checkbox("Activar random", &randomize);
+        ImGui::SliderFloat("Suavidad randomización", &randomLerpSpeed, 0.001f, 0.2f, "%.3f");
+        ImGui::Separator();
+        ImGui::Text("¿Qué randomizar?");
+        ImGui::Checkbox("Tamaño", &randomAffect.triSize);
+        ImGui::Checkbox("Velocidad rotación", &randomAffect.rotationSpeed);
+        ImGui::Checkbox("Ángulo", &randomAffect.angle);
+        ImGui::Checkbox("Translación X", &randomAffect.translateX);
+        ImGui::Checkbox("Translación Y", &randomAffect.translateY);
+        ImGui::Checkbox("Escala X", &randomAffect.scaleX);
+        ImGui::Checkbox("Escala Y", &randomAffect.scaleY);
+        ImGui::Checkbox("Color Top", &randomAffect.colorTop);
+        ImGui::Checkbox("Color Left", &randomAffect.colorLeft);
+        ImGui::Checkbox("Color Right", &randomAffect.colorRight);
+        ImGui::Checkbox("Tipo de figura", &randomAffect.shapeType);
+        ImGui::Checkbox("Segmentos (círculo/línea)", &randomAffect.nSegments);
+        ImGui::Checkbox("Ángulo de grupo", &randomAffect.groupAngle);
+        ImGui::Checkbox("Cantidad Centro", &randomAffect.numCenter);
+        ImGui::Checkbox("Cantidad Derecha", &randomAffect.numRight);
+        ImGui::Checkbox("Cantidad Izquierda", &randomAffect.numLeft);
+        ImGui::Separator();
+        ImGui::Text("Límites de randomización:");
         ImGui::SliderFloat("Tamaño min", &randomLimits.sizeMin, 0.01f, 2.0f, "%.2f");
         ImGui::SliderFloat("Tamaño max", &randomLimits.sizeMax, 0.01f, 2.0f, "%.2f");
         ImGui::SliderFloat("Velocidad min", &randomLimits.speedMin, 1.0f, 5000.0f, "%.1f");
@@ -443,16 +598,14 @@ int main() {
         ImGui::SliderFloat("Escala X max", &randomLimits.sxMax, 0.01f, 2.0f, "%.2f");
         ImGui::SliderFloat("Escala Y min", &randomLimits.syMin, 0.01f, 2.0f, "%.2f");
         ImGui::SliderFloat("Escala Y max", &randomLimits.syMax, 0.01f, 2.0f, "%.2f");
-        ImGui::SliderFloat("Color min", &randomLimits.colorMin, 0.0f, 1.0f, "%.2f");
-        ImGui::SliderFloat("Color max", &randomLimits.colorMax, 0.0f, 1.0f, "%.2f");
         ImGui::SliderInt("Centro min", &randomLimits.numCenterMin, 0, 30);
         ImGui::SliderInt("Centro max", &randomLimits.numCenterMax, 0, 30);
         ImGui::SliderInt("Derecha min", &randomLimits.numRightMin, 0, 30);
         ImGui::SliderInt("Derecha max", &randomLimits.numRightMax, 0, 30);
         ImGui::SliderInt("Izquierda min", &randomLimits.numLeftMin, 0, 30);
         ImGui::SliderInt("Izquierda max", &randomLimits.numLeftMax, 0, 30);
-        ImGui::SliderInt("Figura min", &randomLimits.shapeMin, 0, 2);
-        ImGui::SliderInt("Figura max", &randomLimits.shapeMax, 0, 2);
+        ImGui::SliderInt("Figura min", &randomLimits.shapeMin, 0, 3);
+        ImGui::SliderInt("Figura max", &randomLimits.shapeMax, 0, 3);
         ImGui::SliderInt("Segmentos min", &randomLimits.segMin, 8, 128);
         ImGui::SliderInt("Segmentos max", &randomLimits.segMax, 8, 128);
         ImGui::End();
@@ -469,83 +622,189 @@ int main() {
         ImGui::Text("GPU temp: %s", gpuTemp >= 0.0f ? (std::to_string(gpuTemp) + " °C").c_str() : "No disponible");
         ImGui::End();
 
-        if (autoRotate) {
-            angle += rotationSpeed * deltaTime * (3.14159265f / 180.0f); // radianes
-            if (angle > 2.0f * 3.14159265f) angle -= 2.0f * 3.14159265f;
-            if (angle < 0.0f) angle += 2.0f * 3.14159265f;
-        }
+        // UI para animación global
+        ImGui::Begin("Opciones Globales");
+        ImGui::Checkbox("Rotación automática", &autoRotate);
+        ImGui::Checkbox("Animar color", &animateColor);
+        ImGui::End();
 
-        // Animación de color
-        if (animateColor) {
-            float t = glfwGetTime();
-            // Ejemplo: animar colorTop con el beat
-            colorTop.x = 0.5f + 0.5f * sin(2.0f * 3.14159265f * beatPhase);
-            colorTop.y = 0.5f + 0.5f * sin(2.0f * 3.14159265f * beatPhase + 2.0f);
-            colorTop.z = 0.5f + 0.5f * sin(2.0f * 3.14159265f * beatPhase + 4.0f);
-            // Los otros colores pueden seguir animándose con t
-            colorLeft.x = 0.5f + 0.5f * sin(t + 1.0f);
-            colorLeft.y = 0.5f + 0.5f * sin(t + 3.0f);
-            colorLeft.z = 0.5f + 0.5f * sin(t + 5.0f);
-            colorRight.x = 0.5f + 0.5f * sin(t + 2.0f);
-            colorRight.y = 0.5f + 0.5f * sin(t + 4.0f);
-            colorRight.z = 0.5f + 0.5f * sin(t + 6.0f);
-        }
+        // 2. UI para randomización por grupo
+        ImGui::Separator();
+        ImGui::Text("Randomización por grupo:");
+        ImGui::Checkbox("Figura Centro random", &randomShapeType[0]); ImGui::SameLine();
+        ImGui::Checkbox("Segmentos Centro random", &randomNSegments[0]);
+        ImGui::Checkbox("Figura Derecha random", &randomShapeType[1]); ImGui::SameLine();
+        ImGui::Checkbox("Segmentos Derecha random", &randomNSegments[1]);
+        ImGui::Checkbox("Figura Izquierda random", &randomShapeType[2]); ImGui::SameLine();
+        ImGui::Checkbox("Segmentos Izquierda random", &randomNSegments[2]);
 
-        // Modo random loco
-        if (randomize) {
-            unsigned int t = static_cast<unsigned int>(glfwGetTime() * 1000.0);
-            srand(t);
-            triSize = randomLimits.sizeMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.sizeMax - randomLimits.sizeMin);
-            rotationSpeed = randomLimits.speedMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.speedMax - randomLimits.speedMin);
-            translateX = randomLimits.txMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.txMax - randomLimits.txMin);
-            translateY = randomLimits.tyMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.tyMax - randomLimits.tyMin);
-            scaleX = randomLimits.sxMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.sxMax - randomLimits.sxMin);
-            scaleY = randomLimits.syMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.syMax - randomLimits.syMin);
-            colorTop.x = randomLimits.colorMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.colorMax - randomLimits.colorMin);
-            colorTop.y = randomLimits.colorMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.colorMax - randomLimits.colorMin);
-            colorTop.z = randomLimits.colorMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.colorMax - randomLimits.colorMin);
-            colorLeft.x = randomLimits.colorMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.colorMax - randomLimits.colorMin);
-            colorLeft.y = randomLimits.colorMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.colorMax - randomLimits.colorMin);
-            colorLeft.z = randomLimits.colorMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.colorMax - randomLimits.colorMin);
-            colorRight.x = randomLimits.colorMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.colorMax - randomLimits.colorMin);
-            colorRight.y = randomLimits.colorMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.colorMax - randomLimits.colorMin);
-            colorRight.z = randomLimits.colorMin + static_cast<float>(rand())/RAND_MAX * (randomLimits.colorMax - randomLimits.colorMin);
-            numCenter = randomLimits.numCenterMin + rand() % (randomLimits.numCenterMax - randomLimits.numCenterMin + 1);
-            numRight = randomLimits.numRightMin + rand() % (randomLimits.numRightMax - randomLimits.numRightMin + 1);
-            numLeft = randomLimits.numLeftMin + rand() % (randomLimits.numLeftMax - randomLimits.numLeftMin + 1);
-            shapeType = randomLimits.shapeMin + rand() % (randomLimits.shapeMax - randomLimits.shapeMin + 1);
-            nSegments = randomLimits.segMin + rand() % (randomLimits.segMax - randomLimits.segMin + 1);
-            groupAngleCenter = static_cast<float>(rand())/RAND_MAX * 2.0f * 3.14159265f;
-            groupAngleRight = static_cast<float>(rand())/RAND_MAX * 2.0f * 3.14159265f;
-            groupAngleLeft = static_cast<float>(rand())/RAND_MAX * 2.0f * 3.14159265f;
-        }
+        // 2. UI para separación de grupos
+        ImGui::SliderFloat("Separación de grupos", &groupSeparation, 0.0f, 2.0f, "%.2f");
+        ImGui::Checkbox("Randomizar separación de grupos", &randomizeGroupSeparation);
 
-        // Si cambió el tamaño, los colores o la figura, recrear el shape
-        float curColorTop[3] = {colorTop.x, colorTop.y, colorTop.z};
-        float curColorLeft[3] = {colorLeft.x, colorLeft.y, colorLeft.z};
-        float curColorRight[3] = {colorRight.x, colorRight.y, colorRight.z};
-        bool colorChanged = false;
-        for (int i = 0; i < 3; ++i) {
-            if (curColorTop[i] != colorTopArr[i] || curColorLeft[i] != colorLeftArr[i] || curColorRight[i] != colorRightArr[i]) {
-                colorChanged = true;
-                break;
+        // --- Actualización de objetos: rotación automática y animación de color ---
+        for (int g = 0; g < 3; ++g) {
+            int n = groups[g].numObjects;
+            for (int i = 0; i < n; ++i) {
+                VisualObjectParams& obj = groups[g].objects[i];
+                // Rotación automática
+                if (autoRotate) {
+                    obj.angle += obj.rotationSpeed * deltaTime * (3.14159265f / 180.0f);
+                    if (obj.angle > 2.0f * 3.14159265f) obj.angle -= 2.0f * 3.14159265f;
+                    if (obj.angle < 0.0f) obj.angle += 2.0f * 3.14159265f;
+                }
+                // Animación de color
+                if (animateColor) {
+                    float t = currentTime;
+                    obj.colorTop.x = 0.5f + 0.5f * sin(2.0f * 3.14159265f * beatPhase);
+                    obj.colorTop.y = 0.5f + 0.5f * sin(2.0f * 3.14159265f * beatPhase + 2.0f);
+                    obj.colorTop.z = 0.5f + 0.5f * sin(2.0f * 3.14159265f * beatPhase + 4.0f);
+                    obj.colorLeft.x = 0.5f + 0.5f * sin(t + 1.0f);
+                    obj.colorLeft.y = 0.5f + 0.5f * sin(t + 3.0f);
+                    obj.colorLeft.z = 0.5f + 0.5f * sin(t + 5.0f);
+                    obj.colorRight.x = 0.5f + 0.5f * sin(t + 2.0f);
+                    obj.colorRight.y = 0.5f + 0.5f * sin(t + 4.0f);
+                    obj.colorRight.z = 0.5f + 0.5f * sin(t + 6.0f);
+                }
             }
         }
-        bool shapeChanged = false;
-        static int prevShapeType = 0;
-        int actualSegments = (shapeType == 0) ? 3 : (shapeType == 1) ? 4 : 128;
-        if (shapeType != prevShapeType) shapeChanged = true;
-        if (triSize != prevSize || colorChanged || shapeChanged) {
-            glDeleteVertexArrays(1, &VAO);
-            glDeleteBuffers(1, &VBO);
-            createShape(VAO, VBO, shapeType, triSize, curColorTop, curColorLeft, curColorRight, actualSegments);
-            prevSize = triSize;
+        // 3. Randomización y recreación de shapes por grupo
+        for (int g = 0; g < 3; ++g) {
+            VisualObjectParams& obj = groups[g].objects[0];
+            VisualObjectTargets& tgt = groups[g].targets[0];
+            // Randomizar shapeType por grupo
+            static int tgtShapeType[3] = {obj.shapeType, obj.shapeType, obj.shapeType};
+            if (randomize && randomShapeType[g]) {
+                if (obj.shapeType == tgtShapeType[g]) {
+                    int min = randomLimits.shapeMin;
+                    int max = randomLimits.shapeMax;
+                    tgtShapeType[g] = min + rand() % (max - min + 1);
+                }
+                obj.shapeType += (int)((tgtShapeType[g] - obj.shapeType) * randomLerpSpeed + 0.5f);
+            }
+            // Randomizar nSegments por grupo
+            static int tgtNSegments[3] = {obj.nSegments, obj.nSegments, obj.nSegments};
+            if (randomize && randomNSegments[g]) {
+                if (obj.nSegments == tgtNSegments[g]) {
+                    int min = randomLimits.segMin;
+                    int max = randomLimits.segMax;
+                    tgtNSegments[g] = min + rand() % (max - min + 1);
+                }
+                obj.nSegments += (int)((tgtNSegments[g] - obj.nSegments) * randomLerpSpeed + 0.5f);
+            }
+            // Inicializar targets si es la primera vez
+            if (tgt.target.triSize == 0.0f) tgt.target = obj;
+            if (randomize) {
+                // triSize
+                if (randomAffect.triSize && near(obj.triSize, tgt.target.triSize))
+                    tgt.target.triSize = randomLimits.sizeMin + frand() * (randomLimits.sizeMax - randomLimits.sizeMin);
+                obj.triSize += (tgt.target.triSize - obj.triSize) * randomLerpSpeed;
+                // rotationSpeed
+                if (randomAffect.rotationSpeed && near(obj.rotationSpeed, tgt.target.rotationSpeed, 0.5f))
+                    tgt.target.rotationSpeed = randomLimits.speedMin + frand() * (randomLimits.speedMax - randomLimits.speedMin);
+                obj.rotationSpeed += (tgt.target.rotationSpeed - obj.rotationSpeed) * randomLerpSpeed;
+                // angle
+                if (randomAffect.angle && near(obj.angle, tgt.target.angle, 0.05f))
+                    tgt.target.angle = frand() * 2.0f * 3.14159265f;
+                obj.angle += (tgt.target.angle - obj.angle) * randomLerpSpeed;
+                // translateX
+                if (randomAffect.translateX && near(obj.translateX, tgt.target.translateX))
+                    tgt.target.translateX = randomLimits.txMin + frand() * (randomLimits.txMax - randomLimits.txMin);
+                obj.translateX += (tgt.target.translateX - obj.translateX) * randomLerpSpeed;
+                // translateY
+                if (randomAffect.translateY && near(obj.translateY, tgt.target.translateY))
+                    tgt.target.translateY = randomLimits.tyMin + frand() * (randomLimits.tyMax - randomLimits.tyMin);
+                obj.translateY += (tgt.target.translateY - obj.translateY) * randomLerpSpeed;
+                // scaleX
+                if (randomAffect.scaleX && near(obj.scaleX, tgt.target.scaleX))
+                    tgt.target.scaleX = randomLimits.sxMin + frand() * (randomLimits.sxMax - randomLimits.sxMin);
+                obj.scaleX += (tgt.target.scaleX - obj.scaleX) * randomLerpSpeed;
+                // scaleY
+                if (randomAffect.scaleY && near(obj.scaleY, tgt.target.scaleY))
+                    tgt.target.scaleY = randomLimits.syMin + frand() * (randomLimits.syMax - randomLimits.syMin);
+                obj.scaleY += (tgt.target.scaleY - obj.scaleY) * randomLerpSpeed;
+                // colorTop
+                if (randomAffect.colorTop) for (int c = 0; c < 3; ++c) {
+                    if (near(((float*)&obj.colorTop)[c], ((float*)&tgt.target.colorTop)[c]))
+                        ((float*)&tgt.target.colorTop)[c] = randomLimits.colorMin + frand() * (randomLimits.colorMax - randomLimits.colorMin);
+                    ((float*)&obj.colorTop)[c] += (((float*)&tgt.target.colorTop)[c] - ((float*)&obj.colorTop)[c]) * randomLerpSpeed;
+                }
+                // colorLeft
+                if (randomAffect.colorLeft) for (int c = 0; c < 3; ++c) {
+                    if (near(((float*)&obj.colorLeft)[c], ((float*)&tgt.target.colorLeft)[c]))
+                        ((float*)&tgt.target.colorLeft)[c] = randomLimits.colorMin + frand() * (randomLimits.colorMax - randomLimits.colorMin);
+                    ((float*)&obj.colorLeft)[c] += (((float*)&tgt.target.colorLeft)[c] - ((float*)&obj.colorLeft)[c]) * randomLerpSpeed;
+                }
+                // colorRight
+                if (randomAffect.colorRight) for (int c = 0; c < 3; ++c) {
+                    if (near(((float*)&obj.colorRight)[c], ((float*)&tgt.target.colorRight)[c]))
+                        ((float*)&tgt.target.colorRight)[c] = randomLimits.colorMin + frand() * (randomLimits.colorMax - randomLimits.colorMin);
+                    ((float*)&obj.colorRight)[c] += (((float*)&tgt.target.colorRight)[c] - ((float*)&obj.colorRight)[c]) * randomLerpSpeed;
+                }
+                // groupAngle para cada grupo
+                static float tgtGroupAngleCenter = groupAngleCenter;
+                static float tgtGroupAngleRight  = groupAngleRight;
+                static float tgtGroupAngleLeft   = groupAngleLeft;
+                if (randomAffect.groupAngle) {
+                    if (near(groupAngleCenter, tgtGroupAngleCenter, 0.05f))
+                        tgtGroupAngleCenter = frand() * 2.0f * 3.14159265f;
+                    groupAngleCenter += (tgtGroupAngleCenter - groupAngleCenter) * randomLerpSpeed;
+                    if (near(groupAngleRight, tgtGroupAngleRight, 0.05f))
+                        tgtGroupAngleRight = frand() * 2.0f * 3.14159265f;
+                    groupAngleRight += (tgtGroupAngleRight - groupAngleRight) * randomLerpSpeed;
+                    if (near(groupAngleLeft, tgtGroupAngleLeft, 0.05f))
+                        tgtGroupAngleLeft = frand() * 2.0f * 3.14159265f;
+                    groupAngleLeft += (tgtGroupAngleLeft - groupAngleLeft) * randomLerpSpeed;
+                }
+            }
+            // Si cambió el tamaño, los colores o la figura, recrear el shape
+            float curColorTop[3] = {obj.colorTop.x, obj.colorTop.y, obj.colorTop.z};
+            float curColorLeft[3] = {obj.colorLeft.x, obj.colorLeft.y, obj.colorLeft.z};
+            float curColorRight[3] = {obj.colorRight.x, obj.colorRight.y, obj.colorRight.z};
+            bool colorChanged = false;
             for (int i = 0; i < 3; ++i) {
-                colorTopArr[i] = curColorTop[i];
-                colorLeftArr[i] = curColorLeft[i];
-                colorRightArr[i] = curColorRight[i];
+                if (curColorTop[i] != colorTopArr[i] || curColorLeft[i] != colorLeftArr[i] || curColorRight[i] != colorRightArr[i]) {
+                    colorChanged = true;
+                    break;
+                }
             }
-            prevShapeType = shapeType;
+            bool shapeChanged = false;
+            static int prevShapeType = 0;
+            int actualSegments = (obj.shapeType == 0) ? 3 : (obj.shapeType == 1) ? 4 : obj.nSegments;
+            if (obj.shapeType != prevShapeType) shapeChanged = true;
+            if (obj.triSize != prevSize || colorChanged || shapeChanged) {
+                glDeleteVertexArrays(1, &VAO);
+                glDeleteBuffers(1, &VBO);
+                // Antes de crear el shape, si onlyRGB está activo, forzar colores a RGB puros
+                if (onlyRGB) {
+                    curColorTop[0] = 1.0f; curColorTop[1] = 0.0f; curColorTop[2] = 0.0f;
+                    curColorLeft[0] = 0.0f; curColorLeft[1] = 1.0f; curColorLeft[2] = 0.0f;
+                    curColorRight[0] = 0.0f; curColorRight[1] = 0.0f; curColorRight[2] = 1.0f;
+                }
+                createShape(VAO, VBO, obj.shapeType, obj.triSize, curColorTop, curColorLeft, curColorRight, actualSegments);
+                prevSize = obj.triSize;
+                for (int i = 0; i < 3; ++i) {
+                    colorTopArr[i] = curColorTop[i];
+                    colorLeftArr[i] = curColorLeft[i];
+                    colorRightArr[i] = curColorRight[i];
+                }
+                prevShapeType = obj.shapeType;
+            }
+        }
+
+        // Randomización de cantidad de figuras por grupo
+        static int tgtNum[3] = {groups[0].numObjects, groups[1].numObjects, groups[2].numObjects};
+        for (int g = 0; g < 3; ++g) {
+            // Randomizar cantidad de figuras por grupo
+            bool affect = (g == 0) ? randomAffect.numCenter : (g == 1) ? randomAffect.numRight : randomAffect.numLeft;
+            int min = (g == 0) ? randomLimits.numCenterMin : (g == 1) ? randomLimits.numRightMin : randomLimits.numLeftMin;
+            int max = (g == 0) ? randomLimits.numCenterMax : (g == 1) ? randomLimits.numRightMax : randomLimits.numLeftMax;
+            if (randomize && affect) {
+                if (groups[g].numObjects == tgtNum[g]) {
+                    tgtNum[g] = min + rand() % (max - min + 1);
+                }
+                groups[g].numObjects += (int)((tgtNum[g] - groups[g].numObjects) * randomLerpSpeed + 0.5f);
+            }
         }
 
         // Cambiar swap interval si cambia el modo
@@ -560,6 +819,14 @@ int main() {
             prevFpsMode = fpsMode;
         }
 
+        // 3. Randomización y animación de separación de grupos
+        if (randomize && randomizeGroupSeparation) {
+            if (fabs(groupSeparation - targetGroupSeparation) < 0.01f) {
+                targetGroupSeparation = frand() * 2.0f; // entre 0 y 2
+            }
+            groupSeparation += (targetGroupSeparation - groupSeparation) * randomLerpSpeed;
+        }
+
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f); // Fondo negro
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glUseProgram(shaderProgram);
@@ -569,43 +836,26 @@ int main() {
         GLint translateLoc = glGetUniformLocation(shaderProgram, "uTranslate");
         GLint scaleLoc = glGetUniformLocation(shaderProgram, "uScale");
         glUniform1f(aspectLoc, aspect);
-        glUniform2f(scaleLoc, scaleX, scaleY);
-        glUniform1f(angleLoc, angle); // ImGui::SliderAngle ya da radianes
-        glBindVertexArray(VAO);
-        // Centro
-        for (int i = 0; i < numCenter; ++i) {
-            float theta = (2.0f * 3.14159265f * i) / std::max(1, numCenter) + groupAngleCenter;
-            float r = 0.5f;
-            float tx = translateX + r * cos(theta);
-            float ty = translateY + r * sin(theta);
-            glUniform2f(translateLoc, tx, ty);
-            if (shapeType == 0) glDrawArrays(GL_TRIANGLES, 0, 3);
-            else if (shapeType == 1) glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            else if (shapeType == 2) glDrawArrays(GL_TRIANGLE_FAN, 0, 130);
+        for (int g = 0; g < 3; ++g) {
+            VisualObjectParams& obj = groups[g].objects[0];
+            float baseX = (g == 0) ? 0.0f : (g == 1) ? groupSeparation : -groupSeparation;
+            glUniform2f(scaleLoc, obj.scaleX, obj.scaleY);
+            glUniform1f(angleLoc, obj.angle);
+            glBindVertexArray(VAO);
+            for (int i = 0; i < groups[g].numObjects; ++i) {
+                float theta = (2.0f * 3.14159265f * i) / std::max(1, groups[g].numObjects) + groups[g].groupAngle;
+                float r = 0.5f;
+                float tx = baseX + obj.translateX + r * cos(theta);
+                float ty = obj.translateY + r * sin(theta);
+                glUniform2f(translateLoc, tx, ty);
+                if (obj.shapeType == 0) glDrawArrays(GL_TRIANGLES, 0, 3);
+                else if (obj.shapeType == 1) glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                else if (obj.shapeType == 2) glDrawArrays(GL_TRIANGLE_FAN, 0, 130);
+                else if (obj.shapeType == 3) glDrawArrays(GL_LINES, 0, 2);
+                else if (obj.shapeType == 4) glDrawArrays(GL_LINES, 0, 12);
+            }
+            glBindVertexArray(0);
         }
-        // Derecha
-        for (int i = 0; i < numRight; ++i) {
-            float theta = (2.0f * 3.14159265f * i) / std::max(1, numRight) + groupAngleRight;
-            float r = 0.5f;
-            float tx = translateX + 1.0f + r * cos(theta);
-            float ty = translateY + r * sin(theta);
-            glUniform2f(translateLoc, tx, ty);
-            if (shapeType == 0) glDrawArrays(GL_TRIANGLES, 0, 3);
-            else if (shapeType == 1) glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            else if (shapeType == 2) glDrawArrays(GL_TRIANGLE_FAN, 0, 130);
-        }
-        // Izquierda
-        for (int i = 0; i < numLeft; ++i) {
-            float theta = (2.0f * 3.14159265f * i) / std::max(1, numLeft) + groupAngleLeft;
-            float r = 0.5f;
-            float tx = translateX - 1.0f + r * cos(theta);
-            float ty = translateY + r * sin(theta);
-            glUniform2f(translateLoc, tx, ty);
-            if (shapeType == 0) glDrawArrays(GL_TRIANGLES, 0, 3);
-            else if (shapeType == 1) glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            else if (shapeType == 2) glDrawArrays(GL_TRIANGLE_FAN, 0, 130);
-        }
-        glBindVertexArray(0);
 
         // Render ImGui
         ImGui::Render();
@@ -621,6 +871,15 @@ int main() {
             if (elapsed < frameTime) {
                 int ms = (int)((frameTime - elapsed) * 1000.0f);
                 if (ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+            }
+        }
+
+        // Antes de renderizar, si onlyRGB está activo, forzar colores a RGB puros
+        if (onlyRGB) {
+            for (int g = 0; g < 3; ++g) {
+                groups[g].objects[0].colorTop   = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
+                groups[g].objects[0].colorLeft  = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
+                groups[g].objects[0].colorRight = ImVec4(0.0f, 0.0f, 1.0f, 1.0f);
             }
         }
     }
