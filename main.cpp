@@ -106,9 +106,14 @@ int main() {
     float prevColorTop[3] = {colorTop.x, colorTop.y, colorTop.z};
     float prevColorLeft[3] = {colorLeft.x, colorLeft.y, colorLeft.z};
     float prevColorRight[3] = {colorRight.x, colorRight.y, colorRight.z};
+    const char* shapeNames[] = {"Triángulo", "Cuadrado", "Círculo"};
+    int shapeType = 0;
+    int nSegments = 32;
     GLuint shaderProgram = createShaderProgram(vertexShaderSource, fragmentShaderSource);
     GLuint VAO, VBO;
-    createTriangle(VAO, VBO, triSize, triSize, prevColorTop, prevColorLeft, prevColorRight);
+    createShape(VAO, VBO, shapeType, triSize, prevColorTop, prevColorLeft, prevColorRight, nSegments);
+
+    int numTriangles = 1;
 
     while (!glfwWindowShouldClose(window)) {
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
@@ -157,6 +162,11 @@ int main() {
         ImGui::Text("GPU: %s", (const char*)glGetString(GL_RENDERER));
         ImGui::Text("Resolución: %dx%d", width, height);
         ImGui::Separator();
+        ImGui::SliderInt("Cantidad de triángulos", &numTriangles, 1, 10);
+        ImGui::Combo("Figura", &shapeType, shapeNames, IM_ARRAYSIZE(shapeNames));
+        if (shapeType == 2) {
+            ImGui::SliderInt("Segmentos círculo", &nSegments, 8, 128);
+        }
         if (ImGui::Button("Reset")) {
             triSize = 0.8f;
             angle = 0.0f;
@@ -214,7 +224,7 @@ int main() {
             colorRight.z = 0.5f + 0.5f * sin(t + 6.0f);
         }
 
-        // Si cambió el tamaño o los colores, recrear el triángulo
+        // Si cambió el tamaño, los colores o la figura, recrear el shape
         float curColorTop[3] = {colorTop.x, colorTop.y, colorTop.z};
         float curColorLeft[3] = {colorLeft.x, colorLeft.y, colorLeft.z};
         float curColorRight[3] = {colorRight.x, colorRight.y, colorRight.z};
@@ -225,16 +235,21 @@ int main() {
                 break;
             }
         }
-        if (triSize != prevSize || colorChanged) {
+        bool shapeChanged = false;
+        static int prevShapeType = 0, prevNSegments = 32;
+        if (shapeType != prevShapeType || (shapeType == 2 && nSegments != prevNSegments)) shapeChanged = true;
+        if (triSize != prevSize || colorChanged || shapeChanged) {
             glDeleteVertexArrays(1, &VAO);
             glDeleteBuffers(1, &VBO);
-            createTriangle(VAO, VBO, triSize, triSize, curColorTop, curColorLeft, curColorRight);
+            createShape(VAO, VBO, shapeType, triSize, curColorTop, curColorLeft, curColorRight, nSegments);
             prevSize = triSize;
             for (int i = 0; i < 3; ++i) {
                 prevColorTop[i] = curColorTop[i];
                 prevColorLeft[i] = curColorLeft[i];
                 prevColorRight[i] = curColorRight[i];
             }
+            prevShapeType = shapeType;
+            prevNSegments = nSegments;
         }
 
         // Cambiar swap interval si cambia el modo
@@ -253,16 +268,28 @@ int main() {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glUseProgram(shaderProgram);
         GLint angleLoc = glGetUniformLocation(shaderProgram, "uAngle");
-        glUniform1f(angleLoc, angle); // ImGui::SliderAngle ya da radianes
         float aspect = (float)width / (float)height;
         GLint aspectLoc = glGetUniformLocation(shaderProgram, "uAspect");
-        glUniform1f(aspectLoc, aspect);
         GLint translateLoc = glGetUniformLocation(shaderProgram, "uTranslate");
-        glUniform2f(translateLoc, translateX, translateY);
         GLint scaleLoc = glGetUniformLocation(shaderProgram, "uScale");
+        glUniform1f(aspectLoc, aspect);
         glUniform2f(scaleLoc, scaleX, scaleY);
+        glUniform1f(angleLoc, angle); // ImGui::SliderAngle ya da radianes
         glBindVertexArray(VAO);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        for (int i = 0; i < numTriangles; ++i) {
+            float theta = (2.0f * 3.14159265f * i) / numTriangles;
+            float r = 0.5f; // radio del círculo
+            float tx = translateX + r * cos(theta);
+            float ty = translateY + r * sin(theta);
+            glUniform2f(translateLoc, tx, ty);
+            if (shapeType == 0) {
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+            } else if (shapeType == 1) {
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            } else if (shapeType == 2) {
+                glDrawArrays(GL_TRIANGLE_FAN, 0, nSegments + 2);
+            }
+        }
         glBindVertexArray(0);
 
         // Render ImGui
