@@ -1,32 +1,40 @@
 {
+    "animateColor": true,
+    "bpm": 30.0,
     "colorLeft": [
-        0.47156473994255066,
-        0.4083488881587982,
-        0.5859073400497437
+        0.9413611888885498,
+        0.30509153008461,
+        0.23500292003154755
     ],
     "colorRight": [
-        0.4329471290111542,
-        0.5396060347557068,
-        0.49794214963912964
+        0.6847339868545532,
+        0.0807657390832901,
+        0.6491173505783081
     ],
     "colorTop": [
-        0.3960731625556946,
-        0.4930747151374817,
-        0.5057888627052307
+        0.6647970676422119,
+        0.06380748003721237,
+        0.7592531442642212
     ],
-    "groupAngleCenter": 3.8515167236328125,
-    "groupAngleLeft": 4.79436731338501,
-    "groupAngleRight": 0.3835386335849762,
-    "numCenter": 27,
-    "numLeft": 7,
-    "numRight": 27,
+    "customFps": 60,
+    "fpsMode": 1,
+    "fractalDepth": 5.0,
+    "fractalMode": true,
+    "groupAngleCenter": 0.0,
+    "groupAngleLeft": 0.0,
+    "groupAngleRight": 0.0,
+    "groupSeparation": 0.4135720133781433,
+    "numCenter": 15,
+    "numLeft": 26,
+    "numRight": 10,
+    "onlyRGB": false,
     "randomAffect": {
         "angle": false,
         "colorLeft": true,
         "colorRight": true,
         "colorTop": true,
-        "groupAngle": true,
-        "nSegments": true,
+        "groupAngle": false,
+        "nSegments": false,
         "numCenter": true,
         "numLeft": true,
         "numRight": true,
@@ -49,11 +57,11 @@
         "numRightMin": 0,
         "segMax": 128,
         "segMin": 8,
-        "shapeMax": 3,
+        "shapeMax": 4,
         "shapeMin": 0,
-        "sizeMax": 0.7799999713897705,
-        "sizeMin": 0.009999999776482582,
-        "speedMax": 1016.7000122070313,
+        "sizeMax": 2.0,
+        "sizeMin": 0.10000000149011612,
+        "speedMax": 491.1000061035156,
         "speedMin": 10.0,
         "sxMax": 2.0,
         "sxMin": 0.10000000149011612,
@@ -65,11 +73,11 @@
         "tyMin": -1.0
     },
     "randomize": true,
-    "rotationSpeed": 521.1863403320313,
+    "rotationSpeed": 381.887939453125,
     "scaleX": 1.0,
     "scaleY": 1.0,
-    "shapeType": 2,
+    "shapeType": 0,
     "translateX": 0.0,
     "translateY": 0.0,
-    "triSize": 0.42566829919815063
+    "triSize": 0.7204558253288269
 }
