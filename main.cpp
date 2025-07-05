@@ -22,6 +22,8 @@ using json = nlohmann::json;
 
 #include <sstream>
 #include <filesystem>
+#include "src/audio_capture.h"
+#include "src/fft_utils.h"
 
 // Add shader sources
 const char* vertexShaderSource = R"(
@@ -484,6 +486,19 @@ int main() {
     static float targetGroupSeparation = 1.0f;
     bool randomizeGroupSeparation = false;
 
+    // --- NUEVO: Audio Reactivo ---
+    bool audioReactive = false;
+    static bool audioInit = false;
+    static AudioCapture* audio = nullptr;
+    static FFTUtils* fft = nullptr;
+    static std::vector<int32_t> audioBuffer;
+    static std::vector<float> monoBuffer;
+    static std::vector<float> spectrum;
+    const int audioFftSize = 1024;
+    const char* audioDevice = "alsa_output.pci-0000_05_00.6.analog-stereo.monitor";
+    const int audioSampleRate = 48000;
+    const int audioChannels = 2;
+
     while (!glfwWindowShouldClose(window)) {
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
             glfwSetWindowShouldClose(window, true);
@@ -734,7 +749,60 @@ int main() {
         ImGui::Begin("Opciones Globales");
         ImGui::Checkbox("Rotación automática", &autoRotate);
         ImGui::Checkbox("Animar color", &animateColor);
+        ImGui::Checkbox("Visuales controlados por audio del sistema", &audioReactive);
         ImGui::End();
+
+        // --- Inicialización de audio y FFT si es necesario ---
+        if (audioReactive && !audioInit) {
+            audio = new AudioCapture(audioDevice, audioSampleRate, audioChannels);
+            fft = new FFTUtils(audioFftSize);
+            audioBuffer.resize(audioFftSize * audioChannels);
+            monoBuffer.resize(audioFftSize);
+            spectrum.resize(audioFftSize / 2);
+            audioInit = true;
+        }
+        if (!audioReactive && audioInit) {
+            delete audio;
+            delete fft;
+            audio = nullptr;
+            fft = nullptr;
+            audioInit = false;
+        }
+        // --- Procesamiento de audio y FFT ---
+        if (audioReactive && audio && fft) {
+            if (audio->read(audioBuffer)) {
+                for (int i = 0; i < audioFftSize; ++i) {
+                    int32_t left = audioBuffer[i * 2];
+                    int32_t right = audioBuffer[i * 2 + 1];
+                    monoBuffer[i] = (left + right) / 2.0f / 2147483648.0f;
+                }
+                spectrum = fft->compute(monoBuffer);
+            }
+        }
+        // --- Modulación de visuales por audio ---
+        if (audioReactive && !spectrum.empty()) {
+            float bass = 0.0f, mid = 0.0f, treble = 0.0f;
+            int n = spectrum.size();
+            for (int i = 0; i < n; ++i) {
+                if (i < n / 8) bass += spectrum[i];
+                else if (i < n / 3) mid += spectrum[i];
+                else treble += spectrum[i];
+            }
+            bass /= (n / 8);
+            mid /= (n / 3 - n / 8);
+            treble /= (n - n / 3);
+            // Modula tamaño, color y rotación de los objetos principales
+            for (int g = 0; g < 3; ++g) {
+                for (int i = 0; i < groups[g].numObjects; ++i) {
+                    VisualObjectParams& obj = groups[g].objects[i];
+                    obj.triSize = 0.5f + bass * 2.0f;
+                    obj.rotationSpeed = 90.0f + mid * 100.0f;
+                    obj.colorTop.x = std::min(1.0f, 0.5f + bass * 2.0f);
+                    obj.colorTop.y = std::min(1.0f, 0.5f + mid * 2.0f);
+                    obj.colorTop.z = std::min(1.0f, 0.5f + treble * 2.0f);
+                }
+            }
+        }
 
         // 2. UI para randomización por grupo (ahora manejado por randomAffect)
         ImGui::Separator();
@@ -995,8 +1063,6 @@ int main() {
             }
             groupSeparation += (targetGroupSeparation - groupSeparation) * randomLerpSpeed;
         }
-
-
 
         // Render ImGui
         ImGui::Render();
