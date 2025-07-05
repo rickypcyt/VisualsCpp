@@ -1,39 +1,32 @@
 {
-    "animateColor": false,
-    "audioMasterMode": true,
-    "audioTriangleBaseSize": 0.10000000149011612,
-    "audioTriangleCount": 50,
-    "audioTriangleIntensity": 0.30000001192092896,
-    "audioTriangleMode": true,
-    "bpm": 171.89999389648438,
+    "animateColor": true,
+    "bpm": 300.0,
     "colorLeft": [
-        0.4406234622001648,
-        0.09731519967317581,
-        0.8921688795089722
+        0.999802827835083,
+        0.30477532744407654,
+        0.1626814305782318
     ],
     "colorRight": [
-        0.05702052265405655,
-        0.4843488335609436,
-        0.948693037033081
+        0.7818590402603149,
+        0.007180303335189819,
+        0.6283116936683655
     ],
     "colorTop": [
-        0.11478668451309204,
-        0.3809035122394562,
-        0.9757857918739319
+        0.8227952718734741,
+        0.712877631187439,
+        2.804398536682129e-05
     ],
     "customFps": 60,
     "fpsMode": 1,
     "fractalDepth": 5.0,
-    "fractalMode": true,
-    "groupAngleCenter": 5.218531131744385,
-    "groupAngleLeft": 2.5128841400146484,
-    "groupAngleRight": 0.4804408848285675,
-    "groupSeparation": 1.0672791004180908,
-    "normalModeAudioIntensity": 1.0399999618530273,
-    "normalModeAudioReactive": true,
-    "numCenter": 38,
-    "numLeft": 34,
-    "numRight": 32,
+    "fractalMode": false,
+    "groupAngleCenter": 2.719572067260742,
+    "groupAngleLeft": 2.1450939178466797,
+    "groupAngleRight": 4.720395088195801,
+    "groupSeparation": 1.0431283712387085,
+    "numCenter": 50,
+    "numLeft": 50,
+    "numRight": 50,
     "onlyRGB": false,
     "randomAffect": {
         "angle": true,
@@ -79,12 +72,12 @@
         "tyMax": 0.05000000074505806,
         "tyMin": -1.0
     },
-    "randomize": true,
-    "rotationSpeed": 146.57125854492188,
-    "scaleX": 3.317521333694458,
-    "scaleY": 3.561169147491455,
-    "shapeType": 2,
-    "translateX": -0.32435712218284607,
-    "translateY": -0.9140634536743164,
-    "triSize": 8.18626880645752
+    "randomize": false,
+    "rotationSpeed": 119.37149047851563,
+    "scaleX": 2.224442720413208,
+    "scaleY": 3.8033101558685303,
+    "shapeType": 4,
+    "translateX": -0.6444012522697449,
+    "translateY": -0.49299803376197815,
+    "triSize": 3.9121463298797607
 }

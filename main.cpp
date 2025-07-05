@@ -793,6 +793,11 @@ int main() {
             treble /= (n - n / 3);
             // Modula tamaño, color y rotación de los objetos principales
             for (int g = 0; g < 3; ++g) {
+                // Asegurar que el vector tenga el tamaño correcto
+                if (groups[g].objects.size() < static_cast<size_t>(groups[g].numObjects)) {
+                    groups[g].objects.resize(groups[g].numObjects);
+                    groups[g].targets.resize(groups[g].numObjects);
+                }
                 for (int i = 0; i < groups[g].numObjects; ++i) {
                     VisualObjectParams& obj = groups[g].objects[i];
                     obj.triSize = 0.5f + bass * 2.0f;
@@ -828,6 +833,11 @@ int main() {
 
         // --- Actualización de objetos: rotación automática y animación de color ---
         for (int g = 0; g < 3; ++g) {
+            // Asegurar que el vector tenga el tamaño correcto
+            if (groups[g].objects.size() < static_cast<size_t>(groups[g].numObjects)) {
+                groups[g].objects.resize(groups[g].numObjects);
+                groups[g].targets.resize(groups[g].numObjects);
+            }
             int n = groups[g].numObjects;
             for (int i = 0; i < n; ++i) {
                 VisualObjectParams& obj = groups[g].objects[i];
