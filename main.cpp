@@ -1650,6 +1650,25 @@ int main() {
         ImGui::Text("(Intervalo base para todos los grupos)");
         ImGui::Separator();
         
+        // --- NUEVO: Semilla de randomización ---
+        static int randomSeedMode = 0; // 0 = hora actual, 1 = audio
+        const char* seedModes[] = {"Semilla: Hora actual", "Semilla: Audio del sistema"};
+        ImGui::Combo("Modo de semilla", &randomSeedMode, seedModes, IM_ARRAYSIZE(seedModes));
+        if (randomSeedMode == 0) {
+            // Semilla por hora actual
+            srand((unsigned int)time(nullptr));
+        } else {
+            // Semilla por audio (usar suma de frecuencias como semilla)
+            float audioSum = 0.0f;
+            if (!spectrum.empty()) {
+                for (float v : spectrum) audioSum += v;
+            }
+            unsigned int audioSeed = (unsigned int)(audioSum * 100000.0f);
+            srand(audioSeed);
+        }
+        ImGui::Text("La randomización será única según el modo de semilla seleccionado.");
+        ImGui::Separator();
+        
         // RANDOMIZATION STATUS: Show which parameters are being affected
         if (randomize) {
             ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "🎲 Parámetros siendo randomizados:");
