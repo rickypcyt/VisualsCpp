@@ -22,6 +22,7 @@ using json = nlohmann::json;
 
 #include <sstream>
 #include <filesystem>
+#include "audio_capture.h"
 #include "src/audio_capture.h"
 #include "src/fft_utils.h"
 
@@ -1214,6 +1215,16 @@ std::vector<AnimationPreset> animationPresets = {
     }
 };
 
+// === MONITORES DE AUDIO ===
+#include <utility>
+#include <vector>
+#include <string>
+
+// Lista de monitores y monitor seleccionado
+static std::vector<std::pair<std::string, std::string>> audioMonitors;
+static int selectedMonitor = 0;
+static int prevSelectedMonitor = 0;
+
 int main() {
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW" << std::endl;
@@ -1370,6 +1381,14 @@ int main() {
     const char* audioDevice = "default"; // Use default device instead of specific one
     const int audioSampleRate = 48000;
     const int audioChannels = 2;
+
+    // Obtener lista de monitores de audio al inicio
+    audioMonitors = get_monitor_sources();
+    if (audioMonitors.empty()) {
+        std::cerr << "No se encontraron monitores de audio.\n";
+    }
+    selectedMonitor = 0;
+    prevSelectedMonitor = 0;
 
     while (!glfwWindowShouldClose(window)) {
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
@@ -1731,6 +1750,27 @@ int main() {
             ImGui::SetNextWindowPos(ImVec2(width - 700, height - 500), ImGuiCond_Once);
             ImGui::SetNextWindowSize(ImVec2(680, 480), ImGuiCond_Once);
             ImGui::Begin("🎵 Control de Audio Reactivo Avanzado");
+            // --- Combo box para elegir monitor ---
+            if (!audioMonitors.empty()) {
+                std::vector<const char*> items;
+                for (auto& m : audioMonitors) items.push_back(m.second.c_str());
+                int prev = selectedMonitor;
+                ImGui::Combo("Monitor de audio", &selectedMonitor, items.data(), items.size());
+                if (selectedMonitor != prev) {
+                    // Cambió el monitor, reinicializar audio
+                    if (audioInit) {
+                        delete audio;
+                        delete fft;
+                        audio = nullptr;
+                        fft = nullptr;
+                        audioInit = false;
+                    }
+                    audioReactive = false; // Forzar a reactivar para que se reinicialice
+                }
+                ImGui::Text("Monitor actual: %s", audioMonitors[selectedMonitor].second.c_str());
+            } else {
+                ImGui::TextColored(ImVec4(1,0,0,1), "No se encontraron monitores de audio");
+            }
         
         // Audio Status with more detailed information
         ImGui::Text("Estado Audio: %s", audioReactive ? "✅ ACTIVO" : "❌ INACTIVO");
@@ -2068,6 +2108,14 @@ int main() {
                     }
                     return 0.0f;
                 }, &audioGraph, audioGraph.latencies.size(), 0, nullptr, 0.0f, 50.0f, ImVec2(380, 80));
+
+                // MINI ECUALIZADOR DE FRECUENCIAS (FFT)
+                if (!spectrum.empty()) {
+                    ImGui::Text("🎚️ Espectro de Frecuencias (FFT):");
+                    ImGui::PlotLines("Espectro (FFT)", spectrum.data(), spectrum.size(), 0, nullptr, 0.0f, 1.0f, ImVec2(380, 80));
+                } else {
+                    ImGui::Text("No hay datos de espectro disponibles");
+                }
             } else {
                 ImGui::Text("⏳ Esperando datos de audio...");
             }
@@ -2131,6 +2179,8 @@ int main() {
         // --- Inicialización de audio y FFT si es necesario ---
         if (audioReactive && !audioInit) {
             try {
+                // Usar el monitor seleccionado
+                const char* audioDevice = audioMonitors.empty() ? "default" : audioMonitors[selectedMonitor].first.c_str();
                 audio = new AudioCapture(audioDevice, audioSampleRate, audioChannels);
                 fft = new FFTUtils(audioFftSize);
                 audioBuffer.resize(audioFftSize * audioChannels);
@@ -2364,37 +2414,33 @@ int main() {
                     if (obj.angle > 2.0f * 3.14159265f) obj.angle -= 2.0f * 3.14159265f;
                     if (obj.angle < 0.0f) obj.angle += 2.0f * 3.14159265f;
                 }
-                
                 // INDEPENDENT COLOR ANIMATION: Each group has different color phases
-                float t = currentTime;
-                float phase = beatPhase + (float)i * 0.3f + (float)g * 0.5f; // Different phase per object and group
-                
-                // Group-specific color phases with offset
-                float groupPhaseOffset = (float)g * 2.0f * 3.14159265f / 3.0f; // 120° offset per group
-                float objectPhase = phase + groupPhaseOffset;
-                
-                // Independent color animation for each group
-                if (g == 0) { // Center group - Red dominant
-                    obj.colorTop.x = 0.7f + 0.3f * sin(2.0f * 3.14159265f * objectPhase);
-                    obj.colorTop.y = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 1.0f);
-                    obj.colorTop.z = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 2.0f);
-                } else if (g == 1) { // Right group - Green dominant
-                    obj.colorTop.x = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 1.0f);
-                    obj.colorTop.y = 0.7f + 0.3f * sin(2.0f * 3.14159265f * objectPhase);
-                    obj.colorTop.z = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 2.0f);
-                } else { // Left group - Blue dominant
-                    obj.colorTop.x = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 2.0f);
-                    obj.colorTop.y = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 1.0f);
-                    obj.colorTop.z = 0.7f + 0.3f * sin(2.0f * 3.14159265f * objectPhase);
+                if (animateColor) {
+                    float t = currentTime;
+                    float phase = beatPhase + (float)i * 0.3f + (float)g * 0.5f; // Different phase per object and group
+                    float groupPhaseOffset = (float)g * 2.0f * 3.14159265f / 3.0f; // 120° offset per group
+                    float objectPhase = phase + groupPhaseOffset;
+                    if (g == 0) { // Center group - Red dominant
+                        obj.colorTop.x = 0.7f + 0.3f * sin(2.0f * 3.14159265f * objectPhase);
+                        obj.colorTop.y = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 1.0f);
+                        obj.colorTop.z = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 2.0f);
+                    } else if (g == 1) { // Right group - Green dominant
+                        obj.colorTop.x = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 1.0f);
+                        obj.colorTop.y = 0.7f + 0.3f * sin(2.0f * 3.14159265f * objectPhase);
+                        obj.colorTop.z = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 2.0f);
+                    } else { // Left group - Blue dominant
+                        obj.colorTop.x = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 2.0f);
+                        obj.colorTop.y = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 1.0f);
+                        obj.colorTop.z = 0.7f + 0.3f * sin(2.0f * 3.14159265f * objectPhase);
+                    }
+                    obj.colorLeft.x = 0.5f + 0.5f * sin(t + 1.0f + (float)i * 0.2f + groupPhaseOffset);
+                    obj.colorLeft.y = 0.5f + 0.5f * sin(t + 3.0f + (float)i * 0.2f + groupPhaseOffset);
+                    obj.colorLeft.z = 0.5f + 0.5f * sin(t + 5.0f + (float)i * 0.2f + groupPhaseOffset);
+                    obj.colorRight.x = 0.5f + 0.5f * sin(t + 2.0f + (float)i * 0.2f + groupPhaseOffset);
+                    obj.colorRight.y = 0.5f + 0.5f * sin(t + 4.0f + (float)i * 0.2f + groupPhaseOffset);
+                    obj.colorRight.z = 0.5f + 0.5f * sin(t + 6.0f + (float)i * 0.2f + groupPhaseOffset);
                 }
-                
-                // Side colors with group-specific patterns
-                obj.colorLeft.x = 0.5f + 0.5f * sin(t + 1.0f + (float)i * 0.2f + groupPhaseOffset);
-                obj.colorLeft.y = 0.5f + 0.5f * sin(t + 3.0f + (float)i * 0.2f + groupPhaseOffset);
-                obj.colorLeft.z = 0.5f + 0.5f * sin(t + 5.0f + (float)i * 0.2f + groupPhaseOffset);
-                obj.colorRight.x = 0.5f + 0.5f * sin(t + 2.0f + (float)i * 0.2f + groupPhaseOffset);
-                obj.colorRight.y = 0.5f + 0.5f * sin(t + 4.0f + (float)i * 0.2f + groupPhaseOffset);
-                obj.colorRight.z = 0.5f + 0.5f * sin(t + 6.0f + (float)i * 0.2f + groupPhaseOffset);
+                // Si animateColor es false, NO modificar los colores (se quedan fijos)
             }
         }
         // 3. Randomización y recreación de shapes por grupo (MEJORADA)
@@ -2724,13 +2770,9 @@ int main() {
                 
                 for (int i = 0; i < groups[g].numObjects; ++i) {
                     float theta = (2.0f * 3.14159265f * i) / std::max(1, groups[g].numObjects) + groups[g].groupAngle;
-                    float r = 0.3f; // Reduced radius for better centering
+                    float r = 1.0f; // Use full normalized space
                     float tx = baseX + obj.translateX + r * cos(theta);
                     float ty = obj.translateY + r * sin(theta);
-                    
-                    // Clamp positions to screen bounds
-                    tx = std::max(-maxX, std::min(maxX, tx));
-                    ty = std::max(-maxY, std::min(maxY, ty));
                     
                     InstanceData instance;
                     instance.offsetX = tx;
