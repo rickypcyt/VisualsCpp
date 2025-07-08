@@ -25,21 +25,22 @@ using json = nlohmann::json;
 #include "src/audio_capture.h"
 #include "src/fft_utils.h"
 
-// Add shader sources
+// Add shader sources - OPTIMIZED VERSION
 const char* vertexShaderSource = R"(
 #version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aColor;
+layout(location = 2) in vec2 aOffset;
+layout(location = 3) in float aAngle;
+layout(location = 4) in vec2 aScale;
 out vec3 vColor;
-uniform float uAngle;
 uniform float uAspect;
-uniform vec2 uTranslate;
-uniform vec2 uScale;
+uniform float uTime;
 void main() {
-    float s = sin(uAngle);
-    float c = cos(uAngle);
+    float s = sin(aAngle);
+    float c = cos(aAngle);
     mat2 rot = mat2(c, -s, s, c);
-    vec2 pos = rot * (aPos.xy * uScale) + uTranslate;
+    vec2 pos = rot * (aPos.xy * aScale) + aOffset;
     pos.x /= uAspect;
     gl_Position = vec4(pos, aPos.z, 1.0);
     vColor = aColor;
@@ -54,6 +55,36 @@ void main() {
     FragColor = vec4(vColor, 1.0);
 }
 )";
+
+// OPTIMIZATION: Instanced rendering structures
+struct InstanceData {
+    float offsetX, offsetY;
+    float angle;
+    float scaleX, scaleY;
+};
+
+// OPTIMIZATION: VBO caching system
+struct CachedVBO {
+    GLuint VAO = 0;
+    GLuint VBO = 0;
+    GLuint instanceVBO = 0;
+    int shapeType = -1;
+    float size = 0.0f;
+    float colors[9] = {0}; // 3 colors * 3 components
+    int nSegments = 0;
+    bool fractalMode = false;
+    float fractalDepth = 0.0f;
+    std::vector<InstanceData> instances;
+    bool dirty = true;
+};
+
+// OPTIMIZATION: Global VBO cache
+std::vector<CachedVBO> vboCache;
+const int MAX_CACHED_VBOS = 10;
+
+// OPTIMIZATION: Batch rendering
+const int MAX_INSTANCES_PER_BATCH = 1000;
+std::vector<InstanceData> instanceBuffer;
 
 // Límites para random
 struct RandomLimits {
@@ -353,6 +384,836 @@ struct VisualObjectTargets {
     VisualObjectParams target;
 };
 
+// Move MAX_OBJECTS and VisualGroup to file scope
+const int MAX_OBJECTS = 30;
+struct VisualGroup {
+    std::vector<VisualObjectParams> objects;
+    std::vector<VisualObjectTargets> targets;
+    int numObjects = 1;
+    float groupAngle = 0.0f;
+};
+
+// OPTIMIZATION: VBO caching functions
+CachedVBO* findOrCreateCachedVBO(int shapeType, float size, float colors[9], int nSegments, bool fractalMode, float fractalDepth) {
+    // Buscar VBO existente
+    for (auto& cached : vboCache) {
+        if (cached.shapeType == shapeType && 
+            cached.size == size && 
+            cached.nSegments == nSegments &&
+            cached.fractalMode == fractalMode &&
+            cached.fractalDepth == fractalDepth) {
+            bool colorsMatch = true;
+            for (int i = 0; i < 9; ++i) {
+                if (fabs(cached.colors[i] - colors[i]) > 0.001f) {
+                    colorsMatch = false;
+                    break;
+                }
+            }
+            if (colorsMatch) {
+                return &cached;
+            }
+        }
+    }
+    
+    // Crear nuevo VBO si no existe
+    if (vboCache.size() >= MAX_CACHED_VBOS) {
+        // Limpiar el VBO más antiguo
+        auto& oldest = vboCache[0];
+        if (oldest.VAO) glDeleteVertexArrays(1, &oldest.VAO);
+        if (oldest.VBO) glDeleteBuffers(1, &oldest.VBO);
+        if (oldest.instanceVBO) glDeleteBuffers(1, &oldest.instanceVBO);
+        vboCache.erase(vboCache.begin());
+    }
+    
+    CachedVBO newCached;
+    newCached.shapeType = shapeType;
+    newCached.size = size;
+    newCached.nSegments = nSegments;
+    newCached.fractalMode = fractalMode;
+    newCached.fractalDepth = fractalDepth;
+    for (int i = 0; i < 9; ++i) {
+        newCached.colors[i] = colors[i];
+    }
+    
+    // Crear VAO y VBO
+    if (fractalMode) {
+        createFractal(newCached.VAO, newCached.VBO, shapeType, size, colors, colors+3, colors+6, fractalDepth, 0.0f);
+    } else {
+        createShape(newCached.VAO, newCached.VBO, shapeType, size, colors, colors+3, colors+6, nSegments);
+    }
+    
+    // Crear VBO para instancing
+    glGenBuffers(1, &newCached.instanceVBO);
+    glBindVertexArray(newCached.VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, newCached.instanceVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(InstanceData) * MAX_INSTANCES_PER_BATCH, nullptr, GL_DYNAMIC_DRAW);
+    
+    // Configurar atributos de instancia
+    glEnableVertexAttribArray(2); // offset
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(InstanceData), (void*)offsetof(InstanceData, offsetX));
+    glVertexAttribDivisor(2, 1);
+    
+    glEnableVertexAttribArray(3); // angle
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(InstanceData), (void*)offsetof(InstanceData, angle));
+    glVertexAttribDivisor(3, 1);
+    
+    glEnableVertexAttribArray(4); // scale
+    glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, sizeof(InstanceData), (void*)offsetof(InstanceData, scaleX));
+    glVertexAttribDivisor(4, 1);
+    
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+    
+    vboCache.push_back(newCached);
+    return &vboCache.back();
+}
+
+// OPTIMIZATION: Batch rendering function
+void renderBatch(CachedVBO* cached, const std::vector<InstanceData>& instances, GLuint shaderProgram, float aspect) {
+    if (!cached || instances.empty()) return;
+    
+    // OPTIMIZATION: Set uniforms once per batch
+    glUseProgram(shaderProgram);
+    static float lastAspect = -1.0f;
+    if (lastAspect != aspect) {
+        glUniform1f(glGetUniformLocation(shaderProgram, "uAspect"), aspect);
+        lastAspect = aspect;
+    }
+    
+    // OPTIMIZATION: Only update time uniform if needed (every 16ms for 60fps)
+    static float lastTimeUpdate = 0.0f;
+    float currentTime = (float)glfwGetTime();
+    if (currentTime - lastTimeUpdate > 0.016f) {
+        glUniform1f(glGetUniformLocation(shaderProgram, "uTime"), currentTime);
+        lastTimeUpdate = currentTime;
+    }
+    
+    glBindVertexArray(cached->VAO);
+    
+    // OPTIMIZATION: Render in larger batches for better GPU utilization
+    const int OPTIMAL_BATCH_SIZE = 500; // Increased from 1000 for better balance
+    
+    for (size_t i = 0; i < instances.size(); i += OPTIMAL_BATCH_SIZE) {
+        size_t batchSize = std::min(OPTIMAL_BATCH_SIZE, (int)(instances.size() - i));
+        
+        // OPTIMIZATION: Use glBufferSubData more efficiently
+        glBindBuffer(GL_ARRAY_BUFFER, cached->instanceVBO);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(InstanceData) * batchSize, &instances[i]);
+        
+        // OPTIMIZATION: Pre-calculate vertex counts
+        int vertexCount = 0;
+        if (cached->shapeType == 0) vertexCount = 3;
+        else if (cached->shapeType == 1) vertexCount = 4;
+        else if (cached->shapeType == 2) vertexCount = cached->nSegments + 2;
+        else if (cached->shapeType == 3) vertexCount = 2;
+        else if (cached->shapeType == 4) vertexCount = 12;
+        
+        // OPTIMIZATION: Use instanced rendering for all shapes
+        if (cached->fractalMode) {
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 3000, batchSize);
+        } else {
+            GLenum drawMode = GL_TRIANGLES;
+            if (cached->shapeType == 1) drawMode = GL_TRIANGLE_STRIP;
+            else if (cached->shapeType == 2) drawMode = GL_TRIANGLE_FAN;
+            else if (cached->shapeType == 3 || cached->shapeType == 4) drawMode = GL_LINES;
+            
+            glDrawArraysInstanced(drawMode, 0, vertexCount, batchSize);
+        }
+    }
+    
+    glBindVertexArray(0);
+}
+
+// OPTIMIZATION: Pre-allocate instance buffer
+void prepareInstanceBuffer() {
+    instanceBuffer.reserve(MAX_INSTANCES_PER_BATCH * 3); // Para 3 grupos
+}
+
+// AUDIO REACTIVE SYSTEM: Advanced control structures
+struct AudioReactiveControl {
+    bool enabled = false;
+    float sensitivity = 1.0f;
+    float minValue = 0.0f;
+    float maxValue = 1.0f;
+    float smoothing = 0.1f;
+    float currentValue = 0.0f;
+    float targetValue = 0.0f;
+};
+
+struct AudioReactiveGroup {
+    // Frequency ranges
+    AudioReactiveControl bass;      // 20-150 Hz
+    AudioReactiveControl lowMid;    // 150-400 Hz
+    AudioReactiveControl mid;       // 400-2000 Hz
+    AudioReactiveControl highMid;   // 2000-6000 Hz
+    AudioReactiveControl treble;    // 6000-20000 Hz
+    
+    // Parameters that can be controlled
+    AudioReactiveControl size;
+    AudioReactiveControl rotation;
+    AudioReactiveControl angle;
+    AudioReactiveControl translateX;
+    AudioReactiveControl translateY;
+    AudioReactiveControl scaleX;
+    AudioReactiveControl scaleY;
+    AudioReactiveControl colorIntensity;
+    AudioReactiveControl groupAngle;
+    AudioReactiveControl numObjects;
+    
+    // Mix presets
+    bool useBassMix = false;
+    bool useMidMix = false;
+    bool useTrebleMix = false;
+    bool useFullSpectrumMix = false;
+};
+
+// Audio reactive groups for each visual group
+AudioReactiveGroup audioGroups[3]; // 0: center, 1: right, 2: left
+
+// Audio reactive presets
+struct AudioPreset {
+    std::string name;
+    std::vector<bool> enabledControls;
+    std::vector<float> sensitivities;
+    std::vector<bool> frequencyMixes;
+};
+
+std::vector<AudioPreset> audioPresets = {
+    {"Bass Dominant", {true,false,false,false,false, true,true,false,false,false,false,true,false,false}, 
+     {2.0f,1.0f,1.0f,1.0f,1.0f, 1.5f,1.5f,1.0f,1.0f,1.0f,1.0f,1.0f,1.0f,1.0f},
+     {true,false,false,false,false}},
+    {"Mid Focus", {false,false,true,false,false, true,false,true,true,false,false,false,true,false},
+     {1.0f,1.0f,2.0f,1.0f,1.0f, 1.0f,1.0f,1.5f,1.5f,1.0f,1.0f,1.0f,1.0f,1.0f},
+     {false,false,true,false,false}},
+    {"Treble Energy", {false,false,false,false,true, false,true,false,false,true,true,false,false,true},
+     {1.0f,1.0f,1.0f,1.0f,2.0f, 1.0f,1.0f,1.0f,1.0f,1.5f,1.5f,1.0f,1.0f,1.0f},
+     {false,false,false,false,true}},
+    {"Full Spectrum", {true,true,true,true,true, true,true,true,true,true,true,true,true,true},
+     {1.0f,1.0f,1.0f,1.0f,1.0f, 1.0f,1.0f,1.0f,1.0f,1.0f,1.0f,1.0f,1.0f,1.0f},
+     {true,true,true,true,true}},
+    {"Pulse Mode", {true,false,false,false,false, true,false,false,false,false,false,true,false,false},
+     {3.0f,1.0f,1.0f,1.0f,1.0f, 2.0f,1.0f,1.0f,1.0f,1.0f,1.0f,2.0f,1.0f,1.0f},
+     {true,false,false,false,false}},
+    {"Wave Mode", {false,false,true,false,false, false,true,true,true,false,false,false,true,false},
+     {1.0f,1.0f,2.5f,1.0f,1.0f, 1.0f,1.5f,2.0f,2.0f,1.0f,1.0f,1.0f,1.5f,1.0f},
+     {false,false,true,false,false}},
+    {"Chaos Mode", {true,true,true,true,true, true,true,true,true,true,true,true,true,true},
+     {2.0f,2.0f,2.0f,2.0f,2.0f, 2.0f,2.0f,2.0f,2.0f,2.0f,2.0f,2.0f,2.0f,2.0f},
+     {true,true,true,true,true}},
+    {"Wide Full Range", {true,true,true,true,true, true,true,true,true,true,true,true,true,true},
+     {1.5f,1.5f,1.5f,1.5f,1.5f, 1.5f,1.5f,1.5f,1.5f,1.5f,1.5f,1.5f,1.5f,1.5f},
+     {true,true,true,true,true}}
+};
+
+// Audio analysis variables
+struct AudioAnalysis {
+    float bass = 0.0f;
+    float lowMid = 0.0f;
+    float mid = 0.0f;
+    float highMid = 0.0f;
+    float treble = 0.0f;
+    float overall = 0.0f;
+    float peak = 0.0f;
+    float rms = 0.0f;
+};
+
+AudioAnalysis currentAudio;
+
+// AUDIO REACTIVE SYSTEM: Advanced audio analysis
+void analyzeAudioSpectrum(const std::vector<float>& spectrum, AudioAnalysis& analysis) {
+    if (spectrum.empty()) {
+        // Reset analysis to safe values
+        analysis.bass = 0.0f;
+        analysis.lowMid = 0.0f;
+        analysis.mid = 0.0f;
+        analysis.highMid = 0.0f;
+        analysis.treble = 0.0f;
+        analysis.overall = 0.0f;
+        analysis.peak = 0.0f;
+        analysis.rms = 0.0f;
+        return;
+    }
+    
+    int n = spectrum.size();
+    if (n <= 0) return;
+    
+    float sampleRate = 48000.0f;
+    float freqPerBin = sampleRate / (2.0f * n);
+    
+    // Prevent division by zero
+    if (freqPerBin <= 0.0f) freqPerBin = 1.0f;
+    
+    // Frequency ranges with safety checks
+    int bassStart = std::max(0, (int)(20.0f / freqPerBin));
+    int bassEnd = std::min(n - 1, (int)(150.0f / freqPerBin));
+    int lowMidStart = std::max(bassEnd, (int)(150.0f / freqPerBin));
+    int lowMidEnd = std::min(n - 1, (int)(400.0f / freqPerBin));
+    int midStart = std::max(lowMidEnd, (int)(400.0f / freqPerBin));
+    int midEnd = std::min(n - 1, (int)(2000.0f / freqPerBin));
+    int highMidStart = std::max(midEnd, (int)(2000.0f / freqPerBin));
+    int highMidEnd = std::min(n - 1, (int)(6000.0f / freqPerBin));
+    int trebleStart = std::max(highMidEnd, (int)(6000.0f / freqPerBin));
+    int trebleEnd = std::min(n - 1, (int)(20000.0f / freqPerBin));
+    
+    // Ensure valid ranges
+    bassStart = std::max(0, std::min(n-1, bassStart));
+    bassEnd = std::max(bassStart, std::min(n-1, bassEnd));
+    lowMidStart = std::max(bassEnd, std::min(n-1, lowMidStart));
+    lowMidEnd = std::max(lowMidStart, std::min(n-1, lowMidEnd));
+    midStart = std::max(lowMidEnd, std::min(n-1, midStart));
+    midEnd = std::max(midStart, std::min(n-1, midEnd));
+    highMidStart = std::max(midEnd, std::min(n-1, highMidStart));
+    highMidEnd = std::max(highMidStart, std::min(n-1, highMidEnd));
+    trebleStart = std::max(highMidEnd, std::min(n-1, trebleStart));
+    trebleEnd = std::max(trebleStart, std::min(n-1, trebleEnd));
+    
+    // Calculate averages for each frequency range
+    float bassSum = 0.0f, lowMidSum = 0.0f, midSum = 0.0f, highMidSum = 0.0f, trebleSum = 0.0f;
+    float overallSum = 0.0f;
+    float peakValue = 0.0f;
+    
+    for (int i = 0; i < n; ++i) {
+        float value = spectrum[i];
+        // Check for NaN or infinite values
+        if (std::isnan(value) || std::isinf(value)) {
+            value = 0.0f;
+        }
+        
+        overallSum += value;
+        peakValue = std::max(peakValue, value);
+        
+        if (i >= bassStart && i <= bassEnd) bassSum += value;
+        if (i >= lowMidStart && i <= lowMidEnd) lowMidSum += value;
+        if (i >= midStart && i <= midEnd) midSum += value;
+        if (i >= highMidStart && i <= highMidEnd) highMidSum += value;
+        if (i >= trebleStart && i <= trebleEnd) trebleSum += value;
+    }
+    
+    // Normalize by range size with safety checks
+    int bassCount = std::max(1, bassEnd - bassStart + 1);
+    int lowMidCount = std::max(1, lowMidEnd - lowMidStart + 1);
+    int midCount = std::max(1, midEnd - midStart + 1);
+    int highMidCount = std::max(1, highMidEnd - highMidStart + 1);
+    int trebleCount = std::max(1, trebleEnd - trebleStart + 1);
+    
+    analysis.bass = bassSum / bassCount;
+    analysis.lowMid = lowMidSum / lowMidCount;
+    analysis.mid = midSum / midCount;
+    analysis.highMid = highMidSum / highMidCount;
+    analysis.treble = trebleSum / trebleCount;
+    analysis.overall = overallSum / n;
+    analysis.peak = peakValue;
+    
+    // Safe RMS calculation
+    if (overallSum > 0.0f && n > 0) {
+        analysis.rms = sqrt(overallSum / n);
+    } else {
+        analysis.rms = 0.0f;
+    }
+    
+    // Final safety check for NaN values
+    if (std::isnan(analysis.bass)) analysis.bass = 0.0f;
+    if (std::isnan(analysis.lowMid)) analysis.lowMid = 0.0f;
+    if (std::isnan(analysis.mid)) analysis.mid = 0.0f;
+    if (std::isnan(analysis.highMid)) analysis.highMid = 0.0f;
+    if (std::isnan(analysis.treble)) analysis.treble = 0.0f;
+    if (std::isnan(analysis.overall)) analysis.overall = 0.0f;
+    if (std::isnan(analysis.peak)) analysis.peak = 0.0f;
+    if (std::isnan(analysis.rms)) analysis.rms = 0.0f;
+}
+
+// AUDIO REACTIVE SYSTEM: Apply audio control to parameters
+void applyAudioControl(AudioReactiveControl& control, float audioValue, float deltaTime) {
+    if (!control.enabled) return;
+    
+    // Safety checks for input values
+    if (std::isnan(audioValue) || std::isinf(audioValue)) {
+        audioValue = 0.0f;
+    }
+    
+    // Prevent division by zero or very small deltaTime
+    if (deltaTime <= 0.001f) {
+        deltaTime = 0.016f; // Use 60fps as fallback
+    }
+    
+    // Clamp audio value to reasonable range
+    audioValue = std::max(0.0f, std::min(10.0f, audioValue));
+    
+    // Apply sensitivity and range
+    float targetValue = control.minValue + (control.maxValue - control.minValue) * 
+                       (audioValue * control.sensitivity);
+    
+    // Safety check for target value
+    if (std::isnan(targetValue) || std::isinf(targetValue)) {
+        targetValue = control.minValue;
+    }
+    
+    // Smooth transition with safety checks
+    control.targetValue = targetValue;
+    float smoothingFactor = control.smoothing / deltaTime;
+    
+    // Clamp smoothing factor to prevent instability
+    smoothingFactor = std::max(0.001f, std::min(1.0f, smoothingFactor));
+    
+    control.currentValue += (control.targetValue - control.currentValue) * smoothingFactor;
+    
+    // Final safety check for current value
+    if (std::isnan(control.currentValue) || std::isinf(control.currentValue)) {
+        control.currentValue = control.minValue;
+    }
+}
+
+// AUDIO REACTIVE SYSTEM: Apply preset to audio group
+void applyAudioPreset(AudioReactiveGroup& group, const AudioPreset& preset) {
+    // Apply frequency mix settings
+    group.useBassMix = preset.frequencyMixes[0];
+    group.useMidMix = preset.frequencyMixes[2];
+    group.useTrebleMix = preset.frequencyMixes[4];
+    group.useFullSpectrumMix = preset.frequencyMixes[0] && preset.frequencyMixes[1] && 
+                               preset.frequencyMixes[2] && preset.frequencyMixes[3] && 
+                               preset.frequencyMixes[4];
+    
+    // Apply control settings
+    group.bass.enabled = preset.enabledControls[0];
+    group.lowMid.enabled = preset.enabledControls[1];
+    group.mid.enabled = preset.enabledControls[2];
+    group.highMid.enabled = preset.enabledControls[3];
+    group.treble.enabled = preset.enabledControls[4];
+    
+    group.size.enabled = preset.enabledControls[5];
+    group.rotation.enabled = preset.enabledControls[6];
+    group.angle.enabled = preset.enabledControls[7];
+    group.translateX.enabled = preset.enabledControls[8];
+    group.translateY.enabled = preset.enabledControls[9];
+    group.scaleX.enabled = preset.enabledControls[10];
+    group.scaleY.enabled = preset.enabledControls[11];
+    group.colorIntensity.enabled = preset.enabledControls[12];
+    group.groupAngle.enabled = preset.enabledControls[13];
+    
+    // Apply sensitivities
+    group.bass.sensitivity = preset.sensitivities[0];
+    group.lowMid.sensitivity = preset.sensitivities[1];
+    group.mid.sensitivity = preset.sensitivities[2];
+    group.highMid.sensitivity = preset.sensitivities[3];
+    group.treble.sensitivity = preset.sensitivities[4];
+    
+    group.size.sensitivity = preset.sensitivities[5];
+    group.rotation.sensitivity = preset.sensitivities[6];
+    group.angle.sensitivity = preset.sensitivities[7];
+    group.translateX.sensitivity = preset.sensitivities[8];
+    group.translateY.sensitivity = preset.sensitivities[9];
+    group.scaleX.sensitivity = preset.sensitivities[10];
+    group.scaleY.sensitivity = preset.sensitivities[11];
+    group.colorIntensity.sensitivity = preset.sensitivities[12];
+    group.groupAngle.sensitivity = preset.sensitivities[13];
+}
+
+// UI VISIBILITY CONTROL SYSTEM
+struct UIVisibility {
+    bool showMainControls = true;
+    bool showAdvancedOptions = true;
+    bool showRandomization = true;
+    bool showSystemMonitor = true;
+    bool showAudioControl = true;
+    bool showGlobalOptions = true;
+    bool showAudioGraph = true; // Nueva ventana de gráfico de audio
+    bool showAudioTestMode = true; // Modo de prueba de audio
+    bool showPresets = true; // Nueva ventana de presets
+    bool showAll = true; // Master control
+};
+
+UIVisibility uiVisibility;
+
+// AUDIO GRAPH SYSTEM: Para medir latencia y optimizar
+struct AudioGraphData {
+    static const int MAX_SAMPLES = 200;
+    std::vector<float> audioLevels;
+    std::vector<float> timestamps;
+    std::vector<float> latencies;
+    float lastUpdateTime = 0.0f;
+    float averageLatency = 0.0f;
+    float minLatency = 9999.0f;
+    float maxLatency = 0.0f;
+    int frameCount = 0;
+    float fps = 0.0f;
+    
+    void addSample(float level, float timestamp, float latency) {
+        audioLevels.push_back(level);
+        timestamps.push_back(timestamp);
+        latencies.push_back(latency);
+        
+        // Mantener solo los últimos MAX_SAMPLES
+        if (audioLevels.size() > MAX_SAMPLES) {
+            audioLevels.erase(audioLevels.begin());
+            timestamps.erase(timestamps.begin());
+            latencies.erase(latencies.begin());
+        }
+        
+        // Actualizar estadísticas de latencia
+        if (latency > 0.0f) {
+            minLatency = std::min(minLatency, latency);
+            maxLatency = std::max(maxLatency, latency);
+            
+            // Calcular latencia promedio
+            float sum = 0.0f;
+            int count = 0;
+            for (float lat : latencies) {
+                if (lat > 0.0f) {
+                    sum += lat;
+                    count++;
+                }
+            }
+            if (count > 0) {
+                averageLatency = sum / count;
+            }
+        }
+    }
+    
+    void updateFPS(float currentTime) {
+        frameCount++;
+        if (currentTime - lastUpdateTime >= 1.0f) {
+            fps = frameCount;
+            frameCount = 0;
+            lastUpdateTime = currentTime;
+        }
+    }
+    
+    void clear() {
+        audioLevels.clear();
+        timestamps.clear();
+        latencies.clear();
+        averageLatency = 0.0f;
+        minLatency = 9999.0f;
+        maxLatency = 0.0f;
+    }
+};
+
+AudioGraphData audioGraph;
+
+// AUDIO TEST MODE: Para probar audio reactivo fácilmente
+struct AudioTestMode {
+    bool enabled = false;
+    bool testColorEnabled = true;
+    bool testSizeEnabled = true;
+    bool testRotationEnabled = true;
+    bool testPositionEnabled = true;
+    bool testQuantityEnabled = false;
+    
+    // Frecuencias específicas para test
+    float bassTest = 0.0f;
+    float midTest = 0.0f;
+    float trebleTest = 0.0f;
+    float overallTest = 0.0f;
+    
+    // Controles manuales para simular audio
+    float manualBass = 0.5f;
+    float manualMid = 0.5f;
+    float manualTreble = 0.5f;
+    bool useManualValues = false;
+    
+    // Objeto de prueba
+    float testSize = 0.5f;
+    float testRotation = 0.0f;
+    ImVec4 testColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
+    float testPosX = 0.0f;
+    float testPosY = 0.0f;
+    int testQuantity = 1;
+    
+    void updateFromAudio(const AudioAnalysis& audio) {
+        if (useManualValues) {
+            bassTest = manualBass;
+            midTest = manualMid;
+            trebleTest = manualTreble;
+            overallTest = (manualBass + manualMid + manualTreble) / 3.0f;
+        } else {
+            bassTest = audio.bass;
+            midTest = audio.mid;
+            trebleTest = audio.treble;
+            overallTest = audio.overall;
+        }
+        
+        // Aplicar efectos de audio al objeto de prueba
+        if (testSizeEnabled) {
+            testSize = 0.2f + overallTest * 1.5f; // 0.2 a 1.7
+        }
+        
+        if (testRotationEnabled) {
+            testRotation = midTest * 360.0f; // 0 a 360 grados
+        }
+        
+        if (testColorEnabled) {
+            testColor.x = bassTest;      // Rojo = Bass
+            testColor.y = midTest;       // Verde = Mid
+            testColor.z = trebleTest;    // Azul = Treble
+        }
+        
+        if (testPositionEnabled) {
+            testPosX = (bassTest - 0.5f) * 2.0f;  // -1 a 1
+            testPosY = (trebleTest - 0.5f) * 2.0f; // -1 a 1
+        }
+        
+        if (testQuantityEnabled) {
+            testQuantity = 1 + (int)(overallTest * 10.0f); // 1 a 11 objetos
+        }
+    }
+    
+    void reset() {
+        testSize = 0.5f;
+        testRotation = 0.0f;
+        testColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
+        testPosX = 0.0f;
+        testPosY = 0.0f;
+        testQuantity = 1;
+        manualBass = 0.5f;
+        manualMid = 0.5f;
+        manualTreble = 0.5f;
+    }
+};
+
+AudioTestMode audioTestMode;
+
+// ANIMATION PRESETS: Predefined animation configurations
+struct AnimationPreset {
+    std::string name;
+    std::string description;
+    
+    // Group configurations
+    struct GroupConfig {
+        int shapeType;
+        int numObjects;
+        float triSize;
+        float rotationSpeed;
+        float groupAngle;
+        float translateX, translateY;
+        float scaleX, scaleY;
+        ImVec4 colorTop, colorLeft, colorRight;
+        int nSegments;
+        bool fractalMode;
+        float fractalDepth;
+    };
+    
+    GroupConfig center, right, left;
+    
+    // Global settings
+    float groupSeparation;
+    bool autoRotate;
+    bool randomize;
+    bool audioReactive;
+    float bpm;
+    
+    // Audio preset to apply
+    int audioPresetIndex;
+    
+    // AnimationPreset::apply - mark as const and remove global assignments
+    void apply(VisualGroup groups[3], bool& autoRotate, bool& randomize, 
+               bool& audioReactive, float& bpm, float& groupSeparation) const {
+        // Apply center group
+        groups[0].objects[0].shapeType = center.shapeType;
+        groups[0].numObjects = center.numObjects;
+        groups[0].objects[0].triSize = center.triSize;
+        groups[0].objects[0].rotationSpeed = center.rotationSpeed;
+        groups[0].groupAngle = center.groupAngle;
+        groups[0].objects[0].translateX = center.translateX;
+        groups[0].objects[0].translateY = center.translateY;
+        groups[0].objects[0].scaleX = center.scaleX;
+        groups[0].objects[0].scaleY = center.scaleY;
+        groups[0].objects[0].colorTop = center.colorTop;
+        groups[0].objects[0].colorLeft = center.colorLeft;
+        groups[0].objects[0].colorRight = center.colorRight;
+        groups[0].objects[0].nSegments = center.nSegments;
+        
+        // Apply right group
+        groups[1].objects[0].shapeType = right.shapeType;
+        groups[1].numObjects = right.numObjects;
+        groups[1].objects[0].triSize = right.triSize;
+        groups[1].objects[0].rotationSpeed = right.rotationSpeed;
+        groups[1].groupAngle = right.groupAngle;
+        groups[1].objects[0].translateX = right.translateX;
+        groups[1].objects[0].translateY = right.translateY;
+        groups[1].objects[0].scaleX = right.scaleX;
+        groups[1].objects[0].scaleY = right.scaleY;
+        groups[1].objects[0].colorTop = right.colorTop;
+        groups[1].objects[0].colorLeft = right.colorLeft;
+        groups[1].objects[0].colorRight = right.colorRight;
+        groups[1].objects[0].nSegments = right.nSegments;
+        
+        // Apply left group
+        groups[2].objects[0].shapeType = left.shapeType;
+        groups[2].numObjects = left.numObjects;
+        groups[2].objects[0].triSize = left.triSize;
+        groups[2].objects[0].rotationSpeed = left.rotationSpeed;
+        groups[2].groupAngle = left.groupAngle;
+        groups[2].objects[0].translateX = left.translateX;
+        groups[2].objects[0].translateY = left.translateY;
+        groups[2].objects[0].scaleX = left.scaleX;
+        groups[2].objects[0].scaleY = left.scaleY;
+        groups[2].objects[0].colorTop = left.colorTop;
+        groups[2].objects[0].colorLeft = left.colorLeft;
+        groups[2].objects[0].colorRight = left.colorRight;
+        groups[2].objects[0].nSegments = left.nSegments;
+        
+        // Apply global settings by reference only
+        autoRotate = this->autoRotate;
+        randomize = this->randomize;
+        audioReactive = this->audioReactive;
+        bpm = this->bpm;
+        groupSeparation = this->groupSeparation;
+    }
+};
+
+// Predefined animation presets
+std::vector<AnimationPreset> animationPresets = {
+    {
+        "Cilindros 3D",
+        "Cilindros rotando en diferentes ejes",
+        // Center
+        {SHAPE_CIRCLE, 8, 0.3f, 120.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f,
+         ImVec4(1.0f, 0.2f, 0.2f, 1.0f), ImVec4(0.8f, 0.1f, 0.1f, 1.0f), ImVec4(0.6f, 0.0f, 0.0f, 1.0f), 32, false, 0.0f},
+        // Right
+        {SHAPE_CIRCLE, 6, 0.25f, 180.0f, 45.0f, 0.0f, 0.0f, 0.8f, 0.8f,
+         ImVec4(0.2f, 1.0f, 0.2f, 1.0f), ImVec4(0.1f, 0.8f, 0.1f, 1.0f), ImVec4(0.0f, 0.6f, 0.0f, 1.0f), 24, false, 0.0f},
+        // Left
+        {SHAPE_CIRCLE, 6, 0.25f, 150.0f, -45.0f, 0.0f, 0.0f, 0.8f, 0.8f,
+         ImVec4(0.2f, 0.2f, 1.0f, 1.0f), ImVec4(0.1f, 0.1f, 0.8f, 1.0f), ImVec4(0.0f, 0.0f, 0.6f, 1.0f), 24, false, 0.0f},
+        1.2f, true, false, true, 140.0f, 3 // Full Spectrum audio preset
+    },
+    
+    {
+        "Donas 3D",
+        "Formaciones de donas con múltiples anillos",
+        // Center
+        {SHAPE_CIRCLE, 12, 0.2f, 90.0f, 0.0f, 0.0f, 0.0f, 1.2f, 1.2f,
+         ImVec4(1.0f, 0.5f, 0.0f, 1.0f), ImVec4(0.8f, 0.4f, 0.0f, 1.0f), ImVec4(0.6f, 0.3f, 0.0f, 1.0f), 48, false, 0.0f},
+        // Right
+        {SHAPE_CIRCLE, 10, 0.15f, 120.0f, 30.0f, 0.0f, 0.0f, 1.0f, 1.0f,
+         ImVec4(0.0f, 1.0f, 0.5f, 1.0f), ImVec4(0.0f, 0.8f, 0.4f, 1.0f), ImVec4(0.0f, 0.6f, 0.3f, 1.0f), 36, false, 0.0f},
+        // Left
+        {SHAPE_CIRCLE, 10, 0.15f, 100.0f, -30.0f, 0.0f, 0.0f, 1.0f, 1.0f,
+         ImVec4(0.5f, 0.0f, 1.0f, 1.0f), ImVec4(0.4f, 0.0f, 0.8f, 1.0f), ImVec4(0.3f, 0.0f, 0.6f, 1.0f), 36, false, 0.0f},
+        1.5f, true, false, true, 120.0f, 2 // Mid Focus audio preset
+    },
+    
+    {
+        "Fractales Mágicos",
+        "Fractales animados con colores psicodélicos",
+        // Center
+        {SHAPE_TRIANGLE, 5, 0.4f, 60.0f, 0.0f, 0.0f, 0.0f, 1.5f, 1.5f,
+         ImVec4(1.0f, 0.0f, 1.0f, 1.0f), ImVec4(0.8f, 0.0f, 0.8f, 1.0f), ImVec4(0.6f, 0.0f, 0.6f, 1.0f), 16, true, 4.0f},
+        // Right
+        {SHAPE_SQUARE, 4, 0.35f, 80.0f, 60.0f, 0.0f, 0.0f, 1.3f, 1.3f,
+         ImVec4(0.0f, 1.0f, 1.0f, 1.0f), ImVec4(0.0f, 0.8f, 0.8f, 1.0f), ImVec4(0.0f, 0.6f, 0.6f, 1.0f), 12, true, 3.5f},
+        // Left
+        {SHAPE_CIRCLE, 6, 0.3f, 70.0f, -60.0f, 0.0f, 0.0f, 1.4f, 1.4f,
+         ImVec4(1.0f, 1.0f, 0.0f, 1.0f), ImVec4(0.8f, 0.8f, 0.0f, 1.0f), ImVec4(0.6f, 0.6f, 0.0f, 1.0f), 20, true, 3.8f},
+        1.8f, true, true, true, 100.0f, 6 // Chaos Mode audio preset
+    },
+    
+    {
+        "Líneas Energéticas",
+        "Líneas dinámicas que fluyen con el audio",
+        // Center
+        {SHAPE_LINE, 15, 0.1f, 200.0f, 0.0f, 0.0f, 0.0f, 2.0f, 0.5f,
+         ImVec4(1.0f, 0.0f, 0.0f, 1.0f), ImVec4(0.8f, 0.0f, 0.0f, 1.0f), ImVec4(0.6f, 0.0f, 0.0f, 1.0f), 2, false, 0.0f},
+        // Right
+        {SHAPE_LINE, 12, 0.08f, 180.0f, 45.0f, 0.0f, 0.0f, 1.8f, 0.4f,
+         ImVec4(0.0f, 1.0f, 0.0f, 1.0f), ImVec4(0.0f, 0.8f, 0.0f, 1.0f), ImVec4(0.0f, 0.6f, 0.0f, 1.0f), 2, false, 0.0f},
+        // Left
+        {SHAPE_LINE, 12, 0.08f, 160.0f, -45.0f, 0.0f, 0.0f, 1.8f, 0.4f,
+         ImVec4(0.0f, 0.0f, 1.0f, 1.0f), ImVec4(0.0f, 0.0f, 0.8f, 1.0f), ImVec4(0.0f, 0.0f, 0.6f, 1.0f), 2, false, 0.0f},
+        1.0f, true, false, true, 160.0f, 4 // Full Spectrum audio preset
+    },
+    
+    {
+        "Pulso Cósmico",
+        "Pulsos rítmicos que expanden y contraen",
+        // Center
+        {SHAPE_CIRCLE, 20, 0.15f, 45.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f,
+         ImVec4(1.0f, 0.3f, 0.7f, 1.0f), ImVec4(0.8f, 0.2f, 0.6f, 1.0f), ImVec4(0.6f, 0.1f, 0.5f, 1.0f), 64, false, 0.0f},
+        // Right
+        {SHAPE_CIRCLE, 16, 0.12f, 55.0f, 30.0f, 0.0f, 0.0f, 0.9f, 0.9f,
+         ImVec4(0.3f, 1.0f, 0.7f, 1.0f), ImVec4(0.2f, 0.8f, 0.6f, 1.0f), ImVec4(0.1f, 0.6f, 0.5f, 1.0f), 48, false, 0.0f},
+        // Left
+        {SHAPE_CIRCLE, 16, 0.12f, 50.0f, -30.0f, 0.0f, 0.0f, 0.9f, 0.9f,
+         ImVec4(0.7f, 0.3f, 1.0f, 1.0f), ImVec4(0.6f, 0.2f, 0.8f, 1.0f), ImVec4(0.5f, 0.1f, 0.6f, 1.0f), 48, false, 0.0f},
+        1.3f, true, true, true, 80.0f, 0 // Bass Dominant audio preset
+    },
+    
+    {
+        "Espiral Galáctica",
+        "Espirales que giran como galaxias",
+        // Center
+        {SHAPE_TRIANGLE, 25, 0.08f, 120.0f, 0.0f, 0.0f, 0.0f, 1.2f, 1.2f,
+         ImVec4(1.0f, 0.8f, 0.0f, 1.0f), ImVec4(0.8f, 0.6f, 0.0f, 1.0f), ImVec4(0.6f, 0.4f, 0.0f, 1.0f), 3, false, 0.0f},
+        // Right
+        {SHAPE_TRIANGLE, 20, 0.06f, 140.0f, 60.0f, 0.0f, 0.0f, 1.1f, 1.1f,
+         ImVec4(0.0f, 0.8f, 1.0f, 1.0f), ImVec4(0.0f, 0.6f, 0.8f, 1.0f), ImVec4(0.0f, 0.4f, 0.6f, 1.0f), 3, false, 0.0f},
+        // Left
+        {SHAPE_TRIANGLE, 20, 0.06f, 130.0f, -60.0f, 0.0f, 0.0f, 1.1f, 1.1f,
+         ImVec4(1.0f, 0.0f, 0.8f, 1.0f), ImVec4(0.8f, 0.0f, 0.6f, 1.0f), ImVec4(0.6f, 0.0f, 0.4f, 1.0f), 3, false, 0.0f},
+        1.6f, true, false, true, 110.0f, 5 // Treble Energy audio preset
+    },
+    
+    {
+        "Cristales Geométricos",
+        "Formaciones cristalinas con geometría perfecta",
+        // Center
+        {SHAPE_SQUARE, 8, 0.25f, 75.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f,
+         ImVec4(0.5f, 1.0f, 0.5f, 1.0f), ImVec4(0.4f, 0.8f, 0.4f, 1.0f), ImVec4(0.3f, 0.6f, 0.3f, 1.0f), 4, true, 2.5f},
+        // Right
+        {SHAPE_SQUARE, 6, 0.2f, 90.0f, 45.0f, 0.0f, 0.0f, 0.9f, 0.9f,
+         ImVec4(0.5f, 0.5f, 1.0f, 1.0f), ImVec4(0.4f, 0.4f, 0.8f, 1.0f), ImVec4(0.3f, 0.3f, 0.6f, 1.0f), 4, true, 2.2f},
+        // Left
+        {SHAPE_SQUARE, 6, 0.2f, 85.0f, -45.0f, 0.0f, 0.0f, 0.9f, 0.9f,
+         ImVec4(1.0f, 0.5f, 0.5f, 1.0f), ImVec4(0.8f, 0.4f, 0.4f, 1.0f), ImVec4(0.6f, 0.3f, 0.3f, 1.0f), 4, true, 2.3f},
+        1.4f, true, true, true, 95.0f, 7 // Wide Full Range audio preset
+    },
+    
+    {
+        "Líneas Largas Dinámicas",
+        "Líneas largas que se extienden y contraen",
+        // Center
+        {SHAPE_LONG_LINES, 3, 0.05f, 300.0f, 0.0f, 0.0f, 0.0f, 3.0f, 0.3f,
+         ImVec4(1.0f, 0.0f, 0.5f, 1.0f), ImVec4(0.8f, 0.0f, 0.4f, 1.0f), ImVec4(0.6f, 0.0f, 0.3f, 1.0f), 12, false, 0.0f},
+        // Right
+        {SHAPE_LONG_LINES, 2, 0.04f, 250.0f, 60.0f, 0.0f, 0.0f, 2.5f, 0.25f,
+         ImVec4(0.0f, 1.0f, 0.5f, 1.0f), ImVec4(0.0f, 0.8f, 0.4f, 1.0f), ImVec4(0.0f, 0.6f, 0.3f, 1.0f), 10, false, 0.0f},
+        // Left
+        {SHAPE_LONG_LINES, 2, 0.04f, 280.0f, -60.0f, 0.0f, 0.0f, 2.5f, 0.25f,
+         ImVec4(0.5f, 0.0f, 1.0f, 1.0f), ImVec4(0.4f, 0.0f, 0.8f, 1.0f), ImVec4(0.3f, 0.0f, 0.6f, 1.0f), 10, false, 0.0f},
+        1.2f, true, false, true, 180.0f, 5 // Treble Energy audio preset
+    },
+    
+    {
+        "Vórtice Cuántico",
+        "Vórtices que giran en diferentes direcciones",
+        // Center
+        {SHAPE_TRIANGLE, 30, 0.06f, 200.0f, 0.0f, 0.0f, 0.0f, 0.8f, 0.8f,
+         ImVec4(1.0f, 0.0f, 0.0f, 1.0f), ImVec4(0.8f, 0.0f, 0.0f, 1.0f), ImVec4(0.6f, 0.0f, 0.0f, 1.0f), 3, true, 3.0f},
+        // Right
+        {SHAPE_TRIANGLE, 25, 0.05f, 220.0f, 90.0f, 0.0f, 0.0f, 0.7f, 0.7f,
+         ImVec4(0.0f, 1.0f, 0.0f, 1.0f), ImVec4(0.0f, 0.8f, 0.0f, 1.0f), ImVec4(0.0f, 0.6f, 0.0f, 1.0f), 3, true, 2.8f},
+        // Left
+        {SHAPE_TRIANGLE, 25, 0.05f, 180.0f, -90.0f, 0.0f, 0.0f, 0.7f, 0.7f,
+         ImVec4(0.0f, 0.0f, 1.0f, 1.0f), ImVec4(0.0f, 0.0f, 0.8f, 1.0f), ImVec4(0.0f, 0.0f, 0.6f, 1.0f), 3, true, 2.8f},
+        1.8f, true, true, true, 150.0f, 6 // Chaos Mode audio preset
+    },
+    
+    {
+        "Pulso Neural",
+        "Pulsos que simulan actividad neuronal",
+        // Center
+        {SHAPE_CIRCLE, 40, 0.08f, 30.0f, 0.0f, 0.0f, 0.0f, 0.6f, 0.6f,
+         ImVec4(1.0f, 0.2f, 0.8f, 1.0f), ImVec4(0.8f, 0.1f, 0.6f, 1.0f), ImVec4(0.6f, 0.0f, 0.4f, 1.0f), 16, false, 0.0f},
+        // Right
+        {SHAPE_CIRCLE, 35, 0.07f, 35.0f, 45.0f, 0.0f, 0.0f, 0.5f, 0.5f,
+         ImVec4(0.2f, 1.0f, 0.8f, 1.0f), ImVec4(0.1f, 0.8f, 0.6f, 1.0f), ImVec4(0.0f, 0.6f, 0.4f, 1.0f), 14, false, 0.0f},
+        // Left
+        {SHAPE_CIRCLE, 35, 0.07f, 32.0f, -45.0f, 0.0f, 0.0f, 0.5f, 0.5f,
+         ImVec4(0.8f, 0.2f, 1.0f, 1.0f), ImVec4(0.6f, 0.1f, 0.8f, 1.0f), ImVec4(0.4f, 0.0f, 0.6f, 1.0f), 14, false, 0.0f},
+        0.8f, true, true, true, 60.0f, 0 // Bass Dominant audio preset
+    }
+};
+
 int main() {
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW" << std::endl;
@@ -376,10 +1237,22 @@ int main() {
     glViewport(0, 0, width, height);
     glEnable(GL_MULTISAMPLE); // Habilitar MSAA
 
+    // OPTIMIZATION: Initialize VBO caching system
+    prepareInstanceBuffer();
+    vboCache.reserve(MAX_CACHED_VBOS);
+
     // Dear ImGui: setup
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
+    
+    // OPTIMIZATION: Configure ImGui for better performance
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    
+    // OPTIMIZATION: Reduce ImGui update frequency for better performance
+    io.ConfigInputTextCursorBlink = false; // Disable cursor blink
+    io.ConfigInputTextEnterKeepActive = false; // Don't keep active on enter
+    
     ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330");
@@ -428,12 +1301,18 @@ int main() {
     float targetGroupAngleCenter = groupAngleCenter, targetGroupAngleRight = groupAngleRight, targetGroupAngleLeft = groupAngleLeft;
     int targetNSegments = nSegments;
     GLuint shaderProgram = createShaderProgram(vertexShaderSource, fragmentShaderSource);
-    GLuint VAO, VBO;
+    
+    // OPTIMIZATION: Remove old VAO/VBO variables - now using caching system
     float colorTopArr[3] = {colorTop.x, colorTop.y, colorTop.z};
     float colorLeftArr[3] = {colorLeft.x, colorLeft.y, colorLeft.z};
     float colorRightArr[3] = {colorRight.x, colorRight.y, colorRight.z};
     int actualSegments = (shapeType == 0) ? 3 : (shapeType == 1) ? 4 : 128;
-    createShape(VAO, VBO, shapeType, triSize, colorTopArr, colorLeftArr, colorRightArr, actualSegments);
+    
+    // OPTIMIZATION: Initialize first cached VBO
+    float colors[9] = {colorTopArr[0], colorTopArr[1], colorTopArr[2],
+                      colorLeftArr[0], colorLeftArr[1], colorLeftArr[2],
+                      colorRightArr[0], colorRightArr[1], colorRightArr[2]};
+    CachedVBO* currentCachedVBO = findOrCreateCachedVBO(shapeType, triSize, colors, actualSegments, false, 0.0f);
 
     int numTriangles = 1;
 
@@ -447,13 +1326,6 @@ int main() {
     loadPreset("preset.json", triSize, rotationSpeed, translateX, translateY, scaleX, scaleY, colorTop, colorLeft, colorRight, numCenter, numRight, numLeft, shapeType, groupAngleCenter, groupAngleRight, groupAngleLeft, randomize, randomLimits, randomAffect, groupSeparation, onlyRGB, animateColor, bpm, fpsMode, customFps, fractalMode, fractalDepth);
 
     // Grupos: centro, derecha, izquierda
-    const int MAX_OBJECTS = 30;
-    struct VisualGroup {
-        std::vector<VisualObjectParams> objects;
-        std::vector<VisualObjectTargets> targets;
-        int numObjects = 1;
-        float groupAngle = 0.0f;
-    };
     VisualGroup groups[3]; // 0: centro, 1: derecha, 2: izquierda
 
     // Inicializar grupos
@@ -495,7 +1367,7 @@ int main() {
     static std::vector<float> monoBuffer;
     static std::vector<float> spectrum;
     const int audioFftSize = 1024;
-    const char* audioDevice = "alsa_output.pci-0000_05_00.6.analog-stereo.monitor";
+    const char* audioDevice = "default"; // Use default device instead of specific one
     const int audioSampleRate = 48000;
     const int audioChannels = 2;
 
@@ -503,6 +1375,36 @@ int main() {
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
             glfwSetWindowShouldClose(window, true);
         }
+        
+        // UI MASTER CONTROL: Keyboard shortcuts
+        static bool hKeyPressed = false;
+        if (glfwGetKey(window, GLFW_KEY_H) == GLFW_PRESS && !hKeyPressed) {
+            uiVisibility.showAll = !uiVisibility.showAll;
+            if (!uiVisibility.showAll) {
+                uiVisibility.showMainControls = false;
+                uiVisibility.showAdvancedOptions = false;
+                uiVisibility.showRandomization = false;
+                uiVisibility.showSystemMonitor = false;
+                uiVisibility.showAudioControl = false;
+                uiVisibility.showGlobalOptions = false;
+                uiVisibility.showAudioGraph = false;
+                uiVisibility.showAudioTestMode = false;
+            } else {
+                uiVisibility.showMainControls = true;
+                uiVisibility.showAdvancedOptions = true;
+                uiVisibility.showRandomization = true;
+                uiVisibility.showSystemMonitor = true;
+                uiVisibility.showAudioControl = true;
+                uiVisibility.showGlobalOptions = true;
+                uiVisibility.showAudioGraph = true;
+                uiVisibility.showAudioTestMode = true;
+            }
+            hKeyPressed = true;
+        }
+        if (glfwGetKey(window, GLFW_KEY_H) == GLFW_RELEASE) {
+            hKeyPressed = false;
+        }
+        
         float currentTime = glfwGetTime();
         float deltaTime = currentTime - lastTime;
         lastTime = currentTime;
@@ -526,28 +1428,47 @@ int main() {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        // Ventana izquierda: controles principales
-        ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Once);
-        ImGui::Begin("Triángulo");
-        ImGui::SliderFloat("Tamaño", &groups[0].objects[0].triSize, 0.1f, 2.0f, "%.2f");
-        ImGui::SliderAngle("Rotación", &groups[0].objects[0].angle, 0.0f, 360.0f);
-        ImGui::Checkbox("Rotación automática", &autoRotate);
-        ImGui::SliderFloat("Velocidad de rotación (°/s)", &groups[0].objects[0].rotationSpeed, 10.0f, 720.0f, "%.1f");
-        ImGui::SliderFloat("BPM", &bpm, 30.0f, 300.0f, "%.1f");
-        ImGui::Text("Beat phase: %.2f", beatPhase);
-        const char* fpsModes[] = { "VSync", "Ilimitado", "Custom" };
-        ImGui::Combo("FPS Mode", &fpsMode, fpsModes, IM_ARRAYSIZE(fpsModes));
-        if (fpsMode == FPS_CUSTOM) {
-            ImGui::SliderInt("Custom FPS", &customFps, 10, 1000);
+        // OPTIMIZATION: Reduce ImGui update frequency for better performance
+        static float lastImGuiUpdate = 0.0f;
+        bool shouldUpdateImGui = (currentTime - lastImGuiUpdate > 0.016f); // ~60fps for UI
+        if (shouldUpdateImGui) {
+            lastImGuiUpdate = currentTime;
         }
-        ImGui::Text("ESC para salir");
+
+        // Ventana izquierda: controles principales
+        if (shouldUpdateImGui && uiVisibility.showMainControls) {
+            ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Once);
+            ImGui::Begin("Triángulo");
+            ImGui::SliderFloat("Tamaño", &groups[0].objects[0].triSize, 0.1f, 2.0f, "%.2f");
+            ImGui::SliderAngle("Rotación", &groups[0].objects[0].angle, 0.0f, 360.0f);
+            ImGui::Checkbox("Rotación automática", &autoRotate);
+            ImGui::SliderFloat("Velocidad de rotación (°/s)", &groups[0].objects[0].rotationSpeed, 10.0f, 720.0f, "%.1f");
+            
+            // GLOBAL ROTATION SPEED: Apply to all groups
+            if (ImGui::SliderFloat("Velocidad Global de Rotación (°/s)", &groups[0].objects[0].rotationSpeed, 10.0f, 720.0f, "%.1f")) {
+                // Apply the same rotation speed to all groups
+                for (int g = 1; g < 3; ++g) {
+                    groups[g].objects[0].rotationSpeed = groups[0].objects[0].rotationSpeed;
+                }
+            }
+            
+            ImGui::SliderFloat("BPM", &bpm, 30.0f, 300.0f, "%.1f");
+            ImGui::Text("Beat phase: %.2f", beatPhase);
+            const char* fpsModes[] = { "VSync", "Ilimitado", "Custom" };
+            ImGui::Combo("FPS Mode", &fpsMode, fpsModes, IM_ARRAYSIZE(fpsModes));
+            if (fpsMode == FPS_CUSTOM) {
+                ImGui::SliderInt("Custom FPS", &customFps, 10, 1000);
+            }
+                    ImGui::Text("ESC para salir | H para ocultar/mostrar UI");
         ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
-        ImGui::End();
+            ImGui::End();
+        }
 
         // Ventana derecha: opciones avanzadas
-        ImGui::SetNextWindowPos(ImVec2(width - 350, 10), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(340, 0), ImGuiCond_Always);
-        ImGui::Begin("Opciones Avanzadas");
+        if (uiVisibility.showAdvancedOptions) {
+            ImGui::SetNextWindowPos(ImVec2(width - 350, 10), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(340, 0), ImGuiCond_Always);
+            ImGui::Begin("Opciones Avanzadas");
         ImGui::SliderFloat("Separación de grupos", &groupSeparation, 0.0f, 2.0f, "%.2f");
         ImGui::Checkbox("Randomizar separación de grupos", &randomizeGroupSeparation);
         ImGui::Separator();
@@ -596,6 +1517,15 @@ int main() {
         ImGui::Checkbox("Animar color", &animateColor);
         ImGui::Checkbox("Solo colores RGB puros", &onlyRGB);
         ImGui::Separator();
+        
+        // AUDIO-DRIVEN RANDOMIZATION INFO
+        if (audioReactive && randomize) {
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "🎵 Randomización Controlada por Audio ACTIVA");
+            ImGui::Text("Centro: Bass %.2f | Derecha: Mid %.2f | Izquierda: Treble %.2f", 
+                       currentAudio.bass, currentAudio.mid, currentAudio.treble);
+        }
+        
+        ImGui::Separator();
         ImGui::Text("=== MODO FRACTAL ===");
         ImGui::Checkbox("Modo Fractal", &fractalMode);
         if (fractalMode) {
@@ -608,6 +1538,14 @@ int main() {
         ImGui::Text("OpenGL: %s", (const char*)glGetString(GL_VERSION));
         ImGui::Text("GPU: %s", (const char*)glGetString(GL_RENDERER));
         ImGui::Text("Resolución: %dx%d", width, height);
+        ImGui::Separator();
+        
+        // INDEPENDENT SHAPES INFO
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "🎯 Figuras Independientes por Grupo:");
+        ImGui::Text("Centro: %s", shapeNames[groups[0].objects[0].shapeType]);
+        ImGui::Text("Derecha: %s", shapeNames[groups[1].objects[0].shapeType]);
+        ImGui::Text("Izquierda: %s", shapeNames[groups[2].objects[0].shapeType]);
+        
         ImGui::Separator();
         ImGui::SliderInt("Cantidad de triángulos", &numTriangles, 1, 10);
         ImGui::Combo("Figura", &groups[0].objects[0].shapeType, shapeNames, IM_ARRAYSIZE(shapeNames));
@@ -680,8 +1618,10 @@ int main() {
             stbi_write_png(filename, w, h, 4, pixels.data(), w * 4);
         }
         ImGui::End();
+        }
 
         // Ventana randomización
+        if (uiVisibility.showRandomization) {
         ImGui::SetNextWindowPos(ImVec2(width - 350, height - 400), ImGuiCond_Once);
         ImGui::SetNextWindowSize(ImVec2(340, 390), ImGuiCond_Once);
         ImGui::Begin("Randomización");
@@ -689,6 +1629,44 @@ int main() {
         ImGui::SliderFloat("Suavidad randomización", &randomLerpSpeed, 0.001f, 0.2f, "%.3f");
         ImGui::SliderFloat("Frecuencia base", &randomizeIntervals[0], 0.5f, 10.0f, "%.1f");
         ImGui::Text("(Intervalo base para todos los grupos)");
+        ImGui::Separator();
+        
+        // RANDOMIZATION STATUS: Show which parameters are being affected
+        if (randomize) {
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "🎲 Parámetros siendo randomizados:");
+            if (randomAffect.triSize) ImGui::Text("✅ Tamaño");
+            if (randomAffect.rotationSpeed) ImGui::Text("✅ Velocidad rotación");
+            if (randomAffect.angle) ImGui::Text("✅ Ángulo");
+            if (randomAffect.translateX) ImGui::Text("✅ Translación X");
+            if (randomAffect.translateY) ImGui::Text("✅ Translación Y");
+            if (randomAffect.scaleX) ImGui::Text("✅ Escala X");
+            if (randomAffect.scaleY) ImGui::Text("✅ Escala Y");
+            if (randomAffect.colorTop) ImGui::Text("✅ Color Top");
+            if (randomAffect.colorLeft) ImGui::Text("✅ Color Left");
+            if (randomAffect.colorRight) ImGui::Text("✅ Color Right");
+            if (randomAffect.shapeType) ImGui::Text("✅ Tipo de figura");
+            if (randomAffect.nSegments) ImGui::Text("✅ Segmentos");
+            if (randomAffect.groupAngle) ImGui::Text("✅ Ángulo de grupo");
+            if (randomAffect.numCenter) ImGui::Text("✅ Cantidad Centro");
+            if (randomAffect.numRight) ImGui::Text("✅ Cantidad Derecha");
+            if (randomAffect.numLeft) ImGui::Text("✅ Cantidad Izquierda");
+            
+            // Check if no parameters are selected
+            bool anySelected = randomAffect.triSize || randomAffect.rotationSpeed || randomAffect.angle ||
+                              randomAffect.translateX || randomAffect.translateY || randomAffect.scaleX ||
+                              randomAffect.scaleY || randomAffect.colorTop || randomAffect.colorLeft ||
+                              randomAffect.colorRight || randomAffect.shapeType || randomAffect.nSegments ||
+                              randomAffect.groupAngle || randomAffect.numCenter || randomAffect.numRight ||
+                              randomAffect.numLeft;
+            
+            if (!anySelected) {
+                ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "⚠️ ¡Ningún parámetro seleccionado!");
+                ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "   La randomización no afectará nada.");
+            }
+        } else {
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "❌ Randomización desactivada");
+        }
+        
         ImGui::Separator();
         ImGui::Text("¿Qué randomizar?");
         ImGui::Checkbox("Tamaño", &randomAffect.triSize);
@@ -732,11 +1710,13 @@ int main() {
         ImGui::SliderInt("Segmentos min", &randomLimits.segMin, 3, 256);
         ImGui::SliderInt("Segmentos max", &randomLimits.segMax, 3, 256);
         ImGui::End();
+        }
 
         // Ventana monitor del sistema
-        ImGui::SetNextWindowPos(ImVec2(10, height - 200), ImGuiCond_Once);
-        ImGui::SetNextWindowSize(ImVec2(340, 120), ImGuiCond_Once);
-        ImGui::Begin("Monitor del sistema");
+        if (uiVisibility.showSystemMonitor) {
+            ImGui::SetNextWindowPos(ImVec2(10, height - 200), ImGuiCond_Once);
+            ImGui::SetNextWindowSize(ImVec2(340, 120), ImGuiCond_Once);
+            ImGui::Begin("Monitor del sistema");
         float cpuUsage = getCPUUsage();
         float cpuTemp = getCPUTemp();
         float gpuTemp = getGPUTemp();
@@ -744,22 +1724,448 @@ int main() {
         ImGui::Text("CPU temp: %s", cpuTemp >= 0.0f ? (std::to_string(cpuTemp) + " °C").c_str() : "No disponible");
         ImGui::Text("GPU temp: %s", gpuTemp >= 0.0f ? (std::to_string(gpuTemp) + " °C").c_str() : "No disponible");
         ImGui::End();
+        }
+
+        // AUDIO REACTIVE SYSTEM: Advanced Audio Control Window
+        if (uiVisibility.showAudioControl) {
+            ImGui::SetNextWindowPos(ImVec2(width - 700, height - 500), ImGuiCond_Once);
+            ImGui::SetNextWindowSize(ImVec2(680, 480), ImGuiCond_Once);
+            ImGui::Begin("🎵 Control de Audio Reactivo Avanzado");
+        
+        // Audio Status with more detailed information
+        ImGui::Text("Estado Audio: %s", audioReactive ? "✅ ACTIVO" : "❌ INACTIVO");
+        ImGui::Text("Dispositivo: %s", audioDevice);
+        ImGui::Text("Inicializado: %s", audioInit ? "✅ Sí" : "❌ No");
+        
+        if (audioReactive && !spectrum.empty()) {
+            ImGui::Text("Análisis: Bass: %.3f | Mid: %.3f | Treble: %.3f | Peak: %.3f", 
+                       currentAudio.bass, currentAudio.mid, currentAudio.treble, currentAudio.peak);
+            ImGui::Text("RMS: %.3f | Overall: %.3f", currentAudio.rms, currentAudio.overall);
+        } else if (audioReactive) {
+            ImGui::Text("⚠️ No hay datos de audio disponibles");
+        }
+        
+        ImGui::Separator();
+        
+        // Audio Presets
+        ImGui::Text("🎛️ Presets de Audio:");
+        ImGui::SameLine();
+        if (ImGui::Button("Aplicar a Todos")) {
+            for (int g = 0; g < 3; ++g) {
+                applyAudioPreset(audioGroups[g], audioPresets[0]); // Default to first preset
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Wide Full Range")) {
+            for (int g = 0; g < 3; ++g) {
+                applyAudioPreset(audioGroups[g], audioPresets[7]); // Wide Full Range preset
+            }
+        }
+        
+        // Preset buttons in a grid
+        for (int i = 0; i < audioPresets.size(); ++i) {
+            if (i > 0 && i % 3 != 0) ImGui::SameLine();
+            if (ImGui::Button(audioPresets[i].name.c_str())) {
+                for (int g = 0; g < 3; ++g) {
+                    applyAudioPreset(audioGroups[g], audioPresets[i]);
+                }
+            }
+        }
+        
+        ImGui::Separator();
+        
+        // Group-specific controls
+        const char* groupNames[] = {"Centro", "Derecha", "Izquierda"};
+        for (int g = 0; g < 3; ++g) {
+            if (ImGui::CollapsingHeader(groupNames[g])) {
+                AudioReactiveGroup& group = audioGroups[g];
+                
+                // Frequency range controls
+                ImGui::Text("🎵 Rangos de Frecuencia:");
+                ImGui::Checkbox("Bass (20-150Hz)", &group.bass.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens Bass", &group.bass.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                ImGui::Checkbox("Low Mid (150-400Hz)", &group.lowMid.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens LM", &group.lowMid.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                ImGui::Checkbox("Mid (400-2kHz)", &group.mid.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens Mid", &group.mid.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                ImGui::Checkbox("High Mid (2-6kHz)", &group.highMid.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens HM", &group.highMid.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                ImGui::Checkbox("Treble (6-20kHz)", &group.treble.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens Treb", &group.treble.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                ImGui::Separator();
+                
+                // Parameter controls
+                ImGui::Text("🎛️ Parámetros Controlados:");
+                
+                // Row 1
+                ImGui::Checkbox("Tamaño", &group.size.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Min Size", &group.size.minValue, 0.1f, 2.0f, "%.2f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Max Size", &group.size.maxValue, 0.1f, 5.0f, "%.2f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens Size", &group.size.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                // Row 2
+                ImGui::Checkbox("Rotación", &group.rotation.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Min Rot", &group.rotation.minValue, 0.0f, 360.0f, "%.0f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Max Rot", &group.rotation.maxValue, 0.0f, 1000.0f, "%.0f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens Rot", &group.rotation.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                // Row 3
+                ImGui::Checkbox("Ángulo", &group.angle.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Min Ang", &group.angle.minValue, 0.0f, 360.0f, "%.0f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Max Ang", &group.angle.maxValue, 0.0f, 360.0f, "%.0f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens Ang", &group.angle.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                // Row 4
+                ImGui::Checkbox("Mover X", &group.translateX.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Min TX", &group.translateX.minValue, -2.0f, 2.0f, "%.2f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Max TX", &group.translateX.maxValue, -2.0f, 2.0f, "%.2f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens TX", &group.translateX.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                // Row 5
+                ImGui::Checkbox("Mover Y", &group.translateY.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Min TY", &group.translateY.minValue, -2.0f, 2.0f, "%.2f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Max TY", &group.translateY.maxValue, -2.0f, 2.0f, "%.2f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens TY", &group.translateY.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                // Row 6
+                ImGui::Checkbox("Escala X", &group.scaleX.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Min SX", &group.scaleX.minValue, 0.1f, 2.0f, "%.2f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Max SX", &group.scaleX.maxValue, 0.1f, 5.0f, "%.2f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens SX", &group.scaleX.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                // Row 7
+                ImGui::Checkbox("Escala Y", &group.scaleY.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Min SY", &group.scaleY.minValue, 0.1f, 2.0f, "%.2f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Max SY", &group.scaleY.maxValue, 0.1f, 5.0f, "%.2f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens SY", &group.scaleY.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                // Row 8
+                ImGui::Checkbox("Intensidad Color", &group.colorIntensity.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Min Col", &group.colorIntensity.minValue, 0.0f, 1.0f, "%.2f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Max Col", &group.colorIntensity.maxValue, 0.0f, 2.0f, "%.2f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens Col", &group.colorIntensity.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                // Row 9
+                ImGui::Checkbox("Ángulo Grupo", &group.groupAngle.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Min GA", &group.groupAngle.minValue, 0.0f, 360.0f, "%.0f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Max GA", &group.groupAngle.maxValue, 0.0f, 360.0f, "%.0f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens GA", &group.groupAngle.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                // Row 10
+                ImGui::Checkbox("Cantidad Objetos", &group.numObjects.enabled);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Min Obj", &group.numObjects.minValue, 0.0f, 50.0f, "%.0f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Max Obj", &group.numObjects.maxValue, 0.0f, 100.0f, "%.0f");
+                ImGui::SameLine();
+                ImGui::SliderFloat("Sens Obj", &group.numObjects.sensitivity, 0.1f, 5.0f, "%.1f");
+                
+                ImGui::Separator();
+                
+                // Mix presets for this group
+                ImGui::Text("🎚️ Mix de Frecuencias:");
+                ImGui::Checkbox("Mix Bass", &group.useBassMix);
+                ImGui::SameLine();
+                ImGui::Checkbox("Mix Mid", &group.useMidMix);
+                ImGui::SameLine();
+                ImGui::Checkbox("Mix Treble", &group.useTrebleMix);
+                ImGui::SameLine();
+                ImGui::Checkbox("Mix Completo", &group.useFullSpectrumMix);
+            }
+        }
+        
+        ImGui::End();
+        }
+
+        // UI MASTER CONTROL: Ventana de control maestro
+        ImGui::SetNextWindowPos(ImVec2(width - 200, 10), ImGuiCond_Once);
+        ImGui::SetNextWindowSize(ImVec2(180, 200), ImGuiCond_Once);
+        ImGui::Begin("🎛️ Control Maestro", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+        
+        ImGui::Text("🎮 Control de Ventanas");
+        ImGui::Text("⌨️ Presiona 'H' para mostrar/ocultar todo");
+        ImGui::Separator();
+        
+        // Master toggle
+        if (ImGui::Button(uiVisibility.showAll ? "🙈 Ocultar Todo" : "👁️ Mostrar Todo")) {
+            uiVisibility.showAll = !uiVisibility.showAll;
+            if (!uiVisibility.showAll) {
+                uiVisibility.showMainControls = false;
+                uiVisibility.showAdvancedOptions = false;
+                uiVisibility.showRandomization = false;
+                uiVisibility.showSystemMonitor = false;
+                uiVisibility.showAudioControl = false;
+                uiVisibility.showGlobalOptions = false;
+                uiVisibility.showAudioGraph = false;
+                uiVisibility.showAudioTestMode = false;
+                uiVisibility.showPresets = false;
+            } else {
+                uiVisibility.showMainControls = true;
+                uiVisibility.showAdvancedOptions = true;
+                uiVisibility.showRandomization = true;
+                uiVisibility.showSystemMonitor = true;
+                uiVisibility.showAudioControl = true;
+                uiVisibility.showGlobalOptions = true;
+                uiVisibility.showAudioGraph = true;
+                uiVisibility.showAudioTestMode = true;
+                uiVisibility.showPresets = true;
+            }
+        }
+        
+        ImGui::Separator();
+        
+        // Individual window toggles
+        ImGui::Text("Ventanas Individuales:");
+        ImGui::Checkbox("Controles Principales", &uiVisibility.showMainControls);
+        ImGui::Checkbox("Opciones Avanzadas", &uiVisibility.showAdvancedOptions);
+        ImGui::Checkbox("Randomización", &uiVisibility.showRandomization);
+        ImGui::Checkbox("Monitor Sistema", &uiVisibility.showSystemMonitor);
+        ImGui::Checkbox("Control Audio", &uiVisibility.showAudioControl);
+        ImGui::Checkbox("Gráfico Audio", &uiVisibility.showAudioGraph);
+        ImGui::Checkbox("Opciones Globales", &uiVisibility.showGlobalOptions);
+        ImGui::Checkbox("Modo de Prueba", &uiVisibility.showAudioTestMode);
+        ImGui::Checkbox("Presets", &uiVisibility.showPresets);
+        
+        ImGui::Separator();
+        
+        // Quick presets
+        ImGui::Text("Presets Rápidos:");
+        if (ImGui::Button("🎵 Solo Audio")) {
+            uiVisibility.showMainControls = false;
+            uiVisibility.showAdvancedOptions = false;
+            uiVisibility.showRandomization = false;
+            uiVisibility.showSystemMonitor = false;
+            uiVisibility.showAudioControl = true;
+            uiVisibility.showAudioGraph = true;
+            uiVisibility.showGlobalOptions = false;
+            uiVisibility.showAll = false;
+        }
+        
+        if (ImGui::Button("📊 Solo Gráficos")) {
+            uiVisibility.showMainControls = false;
+            uiVisibility.showAdvancedOptions = false;
+            uiVisibility.showRandomization = false;
+            uiVisibility.showSystemMonitor = true;
+            uiVisibility.showAudioControl = false;
+            uiVisibility.showAudioGraph = true;
+            uiVisibility.showGlobalOptions = false;
+            uiVisibility.showAll = false;
+        }
+        
+        if (ImGui::Button("🎲 Solo Random")) {
+            uiVisibility.showMainControls = false;
+            uiVisibility.showAdvancedOptions = false;
+            uiVisibility.showRandomization = true;
+            uiVisibility.showSystemMonitor = false;
+            uiVisibility.showAudioControl = false;
+            uiVisibility.showAudioGraph = false;
+            uiVisibility.showGlobalOptions = false;
+            uiVisibility.showAll = false;
+        }
+        
+        if (ImGui::Button("⚙️ Solo Controles")) {
+            uiVisibility.showMainControls = true;
+            uiVisibility.showAdvancedOptions = true;
+            uiVisibility.showRandomization = false;
+            uiVisibility.showSystemMonitor = false;
+            uiVisibility.showAudioControl = false;
+            uiVisibility.showAudioGraph = false;
+            uiVisibility.showGlobalOptions = false;
+            uiVisibility.showAll = false;
+        }
+        
+        if (ImGui::Button("🧪 Solo Prueba")) {
+            uiVisibility.showMainControls = false;
+            uiVisibility.showAdvancedOptions = false;
+            uiVisibility.showRandomization = false;
+            uiVisibility.showSystemMonitor = false;
+            uiVisibility.showAudioControl = false;
+            uiVisibility.showAudioGraph = false;
+            uiVisibility.showGlobalOptions = false;
+            uiVisibility.showAudioTestMode = true;
+            uiVisibility.showPresets = false;
+            uiVisibility.showAll = false;
+        }
+        
+        if (ImGui::Button("🎨 Solo Presets")) {
+            uiVisibility.showMainControls = false;
+            uiVisibility.showAdvancedOptions = false;
+            uiVisibility.showRandomization = false;
+            uiVisibility.showSystemMonitor = false;
+            uiVisibility.showAudioControl = false;
+            uiVisibility.showAudioGraph = false;
+            uiVisibility.showGlobalOptions = false;
+            uiVisibility.showAudioTestMode = false;
+            uiVisibility.showPresets = true;
+            uiVisibility.showAll = false;
+        }
+        
+        ImGui::End();
+
+        // AUDIO GRAPH WINDOW: Para medir latencia y optimizar
+        if (uiVisibility.showAudioGraph) {
+            ImGui::SetNextWindowPos(ImVec2(10, height - 300), ImGuiCond_Once);
+            ImGui::SetNextWindowSize(ImVec2(400, 280), ImGuiCond_Once);
+            ImGui::Begin("📊 Gráfico de Audio y Latencia");
+            
+            // Estadísticas de latencia
+            ImGui::Text("🎯 Métricas de Latencia:");
+            ImGui::Text("Promedio: %.2f ms", audioGraph.averageLatency * 1000.0f);
+            ImGui::Text("Mínima: %.2f ms", audioGraph.minLatency * 1000.0f);
+            ImGui::Text("Máxima: %.2f ms", audioGraph.maxLatency * 1000.0f);
+            ImGui::Text("FPS Audio: %.1f", audioGraph.fps);
+            
+            ImGui::Separator();
+            
+            // Gráfico de niveles de audio en tiempo real
+            if (!audioGraph.audioLevels.empty()) {
+                ImGui::Text("📈 Nivel de Audio (últimos %d frames):", (int)audioGraph.audioLevels.size());
+                ImGui::PlotLines("Audio Level", audioGraph.audioLevels.data(), audioGraph.audioLevels.size(), 
+                                0, nullptr, 0.0f, 1.0f, ImVec2(380, 80));
+                
+                ImGui::Text("⏱️ Latencia de Procesamiento:");
+                ImGui::PlotLines("Latency (ms)", [](void* data, int idx) -> float {
+                    AudioGraphData* graph = (AudioGraphData*)data;
+                    if (idx < graph->latencies.size()) {
+                        return graph->latencies[idx] * 1000.0f; // Convertir a ms
+                    }
+                    return 0.0f;
+                }, &audioGraph, audioGraph.latencies.size(), 0, nullptr, 0.0f, 50.0f, ImVec2(380, 80));
+            } else {
+                ImGui::Text("⏳ Esperando datos de audio...");
+            }
+            
+            ImGui::Separator();
+            
+            // Controles de optimización
+            ImGui::Text("⚙️ Optimización:");
+            if (ImGui::Button("Limpiar Datos")) {
+                audioGraph.clear();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset Estadísticas")) {
+                audioGraph.minLatency = 9999.0f;
+                audioGraph.maxLatency = 0.0f;
+                audioGraph.averageLatency = 0.0f;
+            }
+            
+            ImGui::Separator();
+            
+            // Controles de FFT para optimización
+            ImGui::Text("🎛️ Ajustes de FFT:");
+            static int currentFftSize = audioFftSize;
+            static const char* fftSizes[] = {"256", "512", "1024", "2048", "4096"};
+            static int fftSizeIndex = 2; // 1024 por defecto
+            
+            if (ImGui::Combo("Tamaño FFT", &fftSizeIndex, fftSizes, IM_ARRAYSIZE(fftSizes))) {
+                currentFftSize = std::stoi(fftSizes[fftSizeIndex]);
+                // Nota: Para aplicar el cambio, necesitarías reinicializar el FFT
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "⚠️ Reinicia el audio para aplicar cambios");
+            }
+            
+            ImGui::Text("Tamaño actual: %d", audioFftSize);
+            ImGui::Text("Frecuencia de muestreo: %d Hz", audioSampleRate);
+            ImGui::Text("Resolución: %.1f Hz", (float)audioSampleRate / audioFftSize);
+            
+            ImGui::Separator();
+            
+            // Recomendaciones basadas en latencia
+            ImGui::Text("💡 Recomendaciones:");
+            if (audioGraph.averageLatency > 0.016f) { // Más de 16ms
+                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "⚠️ Latencia alta - Considera reducir FFT size");
+            } else if (audioGraph.averageLatency > 0.008f) { // Más de 8ms
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "⚡ Latencia moderada - OK para la mayoría de usos");
+            } else {
+                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "✅ Latencia excelente - Rendimiento óptimo");
+            }
+            
+            ImGui::End();
+        }
 
         // UI para animación global
-        ImGui::Begin("Opciones Globales");
-        ImGui::Checkbox("Rotación automática", &autoRotate);
-        ImGui::Checkbox("Animar color", &animateColor);
-        ImGui::Checkbox("Visuales controlados por audio del sistema", &audioReactive);
-        ImGui::End();
+        if (uiVisibility.showGlobalOptions) {
+            ImGui::Begin("Opciones Globales");
+            ImGui::Checkbox("Rotación automática", &autoRotate);
+            ImGui::Checkbox("Animar color", &animateColor);
+            ImGui::Checkbox("Visuales controlados por audio del sistema", &audioReactive);
+            ImGui::End();
+        }
 
         // --- Inicialización de audio y FFT si es necesario ---
         if (audioReactive && !audioInit) {
-            audio = new AudioCapture(audioDevice, audioSampleRate, audioChannels);
-            fft = new FFTUtils(audioFftSize);
-            audioBuffer.resize(audioFftSize * audioChannels);
-            monoBuffer.resize(audioFftSize);
-            spectrum.resize(audioFftSize / 2);
-            audioInit = true;
+            try {
+                audio = new AudioCapture(audioDevice, audioSampleRate, audioChannels);
+                fft = new FFTUtils(audioFftSize);
+                audioBuffer.resize(audioFftSize * audioChannels);
+                monoBuffer.resize(audioFftSize);
+                spectrum.resize(audioFftSize / 2);
+                audioInit = true;
+                
+                // Initialize audio groups with default values
+                for (int g = 0; g < 3; ++g) {
+                    audioGroups[g].size.minValue = 0.1f;
+                    audioGroups[g].size.maxValue = 2.0f;
+                    audioGroups[g].rotation.minValue = 0.0f;
+                    audioGroups[g].rotation.maxValue = 500.0f;
+                    audioGroups[g].angle.minValue = 0.0f;
+                    audioGroups[g].angle.maxValue = 360.0f;
+                    audioGroups[g].translateX.minValue = -1.0f;
+                    audioGroups[g].translateX.maxValue = 1.0f;
+                    audioGroups[g].translateY.minValue = -1.0f;
+                    audioGroups[g].translateY.maxValue = 1.0f;
+                    audioGroups[g].scaleX.minValue = 0.1f;
+                    audioGroups[g].scaleX.maxValue = 3.0f;
+                    audioGroups[g].scaleY.minValue = 0.1f;
+                    audioGroups[g].scaleY.maxValue = 3.0f;
+                    audioGroups[g].colorIntensity.minValue = 0.0f;
+                    audioGroups[g].colorIntensity.maxValue = 2.0f;
+                    audioGroups[g].groupAngle.minValue = 0.0f;
+                    audioGroups[g].groupAngle.maxValue = 360.0f;
+                    audioGroups[g].numObjects.minValue = 0.0f;
+                    audioGroups[g].numObjects.maxValue = 50.0f;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Error initializing audio: " << e.what() << std::endl;
+                audioReactive = false;
+                audioInit = false;
+            }
         }
         if (!audioReactive && audioInit) {
             delete audio;
@@ -770,42 +2176,153 @@ int main() {
         }
         // --- Procesamiento de audio y FFT ---
         if (audioReactive && audio && fft) {
-            if (audio->read(audioBuffer)) {
-                for (int i = 0; i < audioFftSize; ++i) {
-                    int32_t left = audioBuffer[i * 2];
-                    int32_t right = audioBuffer[i * 2 + 1];
-                    monoBuffer[i] = (left + right) / 2.0f / 2147483648.0f;
+            try {
+                float audioStartTime = glfwGetTime(); // Medir tiempo de inicio
+                
+                if (audio->read(audioBuffer)) {
+                    for (int i = 0; i < audioFftSize; ++i) {
+                        int32_t left = audioBuffer[i * 2];
+                        int32_t right = audioBuffer[i * 2 + 1];
+                        monoBuffer[i] = (left + right) / 2.0f / 2147483648.0f;
+                    }
+                    spectrum = fft->compute(monoBuffer);
+                    
+                    // AUDIO REACTIVE SYSTEM: Advanced analysis
+                    analyzeAudioSpectrum(spectrum, currentAudio);
+                    
+                    // Medir latencia de procesamiento
+                    float audioEndTime = glfwGetTime();
+                    float processingLatency = audioEndTime - audioStartTime;
+                    
+                    // Actualizar gráfico de audio
+                    audioGraph.addSample(currentAudio.overall, currentTime, processingLatency);
+                    audioGraph.updateFPS(currentTime);
+                    
+                    // Apply audio controls to each group
+                    for (int g = 0; g < 3; ++g) {
+                        AudioReactiveGroup& audioGroup = audioGroups[g];
+                        
+                        // Determine which frequency to use based on mix settings
+                        float bassValue = currentAudio.bass;
+                        float midValue = currentAudio.mid;
+                        float trebleValue = currentAudio.treble;
+                        float overallValue = currentAudio.overall;
+                        
+                        // Apply frequency mix
+                        if (audioGroup.useBassMix) {
+                            bassValue *= 2.0f; // Boost bass
+                        }
+                        if (audioGroup.useMidMix) {
+                            midValue *= 2.0f; // Boost mid
+                        }
+                        if (audioGroup.useTrebleMix) {
+                            trebleValue *= 2.0f; // Boost treble
+                        }
+                        if (audioGroup.useFullSpectrumMix) {
+                            overallValue *= 1.5f; // Boost overall
+                        }
+                        
+                        // Apply controls with delta time for smooth transitions
+                        applyAudioControl(audioGroup.size, overallValue, deltaTime);
+                        applyAudioControl(audioGroup.rotation, midValue, deltaTime);
+                        applyAudioControl(audioGroup.angle, trebleValue, deltaTime);
+                        applyAudioControl(audioGroup.translateX, bassValue, deltaTime);
+                        applyAudioControl(audioGroup.translateY, midValue, deltaTime);
+                        applyAudioControl(audioGroup.scaleX, trebleValue, deltaTime);
+                        applyAudioControl(audioGroup.scaleY, bassValue, deltaTime);
+                        applyAudioControl(audioGroup.colorIntensity, overallValue, deltaTime);
+                        applyAudioControl(audioGroup.groupAngle, midValue, deltaTime);
+                        applyAudioControl(audioGroup.numObjects, bassValue, deltaTime);
+                        
+                        // Apply the audio-controlled values to visual objects
+                        if (groups[g].objects.size() < static_cast<size_t>(groups[g].numObjects)) {
+                            groups[g].objects.resize(groups[g].numObjects);
+                            groups[g].targets.resize(groups[g].numObjects);
+                        }
+                        
+                        for (int i = 0; i < groups[g].numObjects; ++i) {
+                            VisualObjectParams& obj = groups[g].objects[i];
+                            
+                            // Apply audio-controlled parameters with safety checks
+                            if (audioGroup.size.enabled) {
+                                float sizeValue = audioGroup.size.currentValue;
+                                if (!std::isnan(sizeValue) && !std::isinf(sizeValue)) {
+                                    obj.triSize = std::max(0.01f, std::min(10.0f, sizeValue));
+                                }
+                            }
+                            if (audioGroup.rotation.enabled) {
+                                float rotValue = audioGroup.rotation.currentValue;
+                                if (!std::isnan(rotValue) && !std::isinf(rotValue)) {
+                                    obj.rotationSpeed = std::max(0.0f, std::min(2000.0f, rotValue));
+                                }
+                            }
+                            if (audioGroup.angle.enabled) {
+                                float angleValue = audioGroup.angle.currentValue;
+                                if (!std::isnan(angleValue) && !std::isinf(angleValue)) {
+                                    obj.angle = angleValue * (3.14159265f / 180.0f);
+                                }
+                            }
+                            if (audioGroup.translateX.enabled) {
+                                float txValue = audioGroup.translateX.currentValue;
+                                if (!std::isnan(txValue) && !std::isinf(txValue)) {
+                                    obj.translateX = std::max(-5.0f, std::min(5.0f, txValue));
+                                }
+                            }
+                            if (audioGroup.translateY.enabled) {
+                                float tyValue = audioGroup.translateY.currentValue;
+                                if (!std::isnan(tyValue) && !std::isinf(tyValue)) {
+                                    obj.translateY = std::max(-5.0f, std::min(5.0f, tyValue));
+                                }
+                            }
+                            if (audioGroup.scaleX.enabled) {
+                                float sxValue = audioGroup.scaleX.currentValue;
+                                if (!std::isnan(sxValue) && !std::isinf(sxValue)) {
+                                    obj.scaleX = std::max(0.01f, std::min(10.0f, sxValue));
+                                }
+                            }
+                            if (audioGroup.scaleY.enabled) {
+                                float syValue = audioGroup.scaleY.currentValue;
+                                if (!std::isnan(syValue) && !std::isinf(syValue)) {
+                                    obj.scaleY = std::max(0.01f, std::min(10.0f, syValue));
+                                }
+                            }
+                            if (audioGroup.colorIntensity.enabled) {
+                                float intensity = audioGroup.colorIntensity.currentValue;
+                                if (!std::isnan(intensity) && !std::isinf(intensity)) {
+                                    intensity = std::max(0.0f, std::min(5.0f, intensity));
+                                    obj.colorTop.x = std::min(1.0f, obj.colorTop.x * intensity);
+                                    obj.colorTop.y = std::min(1.0f, obj.colorTop.y * intensity);
+                                    obj.colorTop.z = std::min(1.0f, obj.colorTop.z * intensity);
+                                }
+                            }
+                        }
+                        
+                        // Apply group-level controls with safety checks
+                        if (audioGroup.groupAngle.enabled) {
+                            float gaValue = audioGroup.groupAngle.currentValue;
+                            if (!std::isnan(gaValue) && !std::isinf(gaValue)) {
+                                groups[g].groupAngle = gaValue * (3.14159265f / 180.0f);
+                            }
+                        }
+                        if (audioGroup.numObjects.enabled) {
+                            float numValue = audioGroup.numObjects.currentValue;
+                            if (!std::isnan(numValue) && !std::isinf(numValue)) {
+                                groups[g].numObjects = (int)std::max(0.0f, std::min(100.0f, numValue));
+                            }
+                        }
+                    }
                 }
-                spectrum = fft->compute(monoBuffer);
-            }
-        }
-        // --- Modulación de visuales por audio ---
-        if (audioReactive && !spectrum.empty()) {
-            float bass = 0.0f, mid = 0.0f, treble = 0.0f;
-            int n = spectrum.size();
-            for (int i = 0; i < n; ++i) {
-                if (i < n / 8) bass += spectrum[i];
-                else if (i < n / 3) mid += spectrum[i];
-                else treble += spectrum[i];
-            }
-            bass /= (n / 8);
-            mid /= (n / 3 - n / 8);
-            treble /= (n - n / 3);
-            // Modula tamaño, color y rotación de los objetos principales
-            for (int g = 0; g < 3; ++g) {
-                // Asegurar que el vector tenga el tamaño correcto
-                if (groups[g].objects.size() < static_cast<size_t>(groups[g].numObjects)) {
-                    groups[g].objects.resize(groups[g].numObjects);
-                    groups[g].targets.resize(groups[g].numObjects);
-                }
-                for (int i = 0; i < groups[g].numObjects; ++i) {
-                    VisualObjectParams& obj = groups[g].objects[i];
-                    obj.triSize = 0.5f + bass * 2.0f;
-                    obj.rotationSpeed = 90.0f + mid * 100.0f;
-                    obj.colorTop.x = std::min(1.0f, 0.5f + bass * 2.0f);
-                    obj.colorTop.y = std::min(1.0f, 0.5f + mid * 2.0f);
-                    obj.colorTop.z = std::min(1.0f, 0.5f + treble * 2.0f);
-                }
+            } catch (const std::exception& e) {
+                std::cerr << "Error processing audio: " << e.what() << std::endl;
+                // Reset audio analysis to safe values
+                currentAudio.bass = 0.0f;
+                currentAudio.lowMid = 0.0f;
+                currentAudio.mid = 0.0f;
+                currentAudio.highMid = 0.0f;
+                currentAudio.treble = 0.0f;
+                currentAudio.overall = 0.0f;
+                currentAudio.peak = 0.0f;
+                currentAudio.rms = 0.0f;
             }
         }
 
@@ -847,18 +2364,37 @@ int main() {
                     if (obj.angle > 2.0f * 3.14159265f) obj.angle -= 2.0f * 3.14159265f;
                     if (obj.angle < 0.0f) obj.angle += 2.0f * 3.14159265f;
                 }
-                // Animación de color - SIEMPRE activa
+                
+                // INDEPENDENT COLOR ANIMATION: Each group has different color phases
                 float t = currentTime;
-                float phase = beatPhase + (float)i * 0.3f + (float)g * 0.5f; // Diferente fase por objeto y grupo
-                obj.colorTop.x = 0.5f + 0.5f * sin(2.0f * 3.14159265f * phase);
-                obj.colorTop.y = 0.5f + 0.5f * sin(2.0f * 3.14159265f * phase + 2.0f);
-                obj.colorTop.z = 0.5f + 0.5f * sin(2.0f * 3.14159265f * phase + 4.0f);
-                obj.colorLeft.x = 0.5f + 0.5f * sin(t + 1.0f + (float)i * 0.2f);
-                obj.colorLeft.y = 0.5f + 0.5f * sin(t + 3.0f + (float)i * 0.2f);
-                obj.colorLeft.z = 0.5f + 0.5f * sin(t + 5.0f + (float)i * 0.2f);
-                obj.colorRight.x = 0.5f + 0.5f * sin(t + 2.0f + (float)i * 0.2f);
-                obj.colorRight.y = 0.5f + 0.5f * sin(t + 4.0f + (float)i * 0.2f);
-                obj.colorRight.z = 0.5f + 0.5f * sin(t + 6.0f + (float)i * 0.2f);
+                float phase = beatPhase + (float)i * 0.3f + (float)g * 0.5f; // Different phase per object and group
+                
+                // Group-specific color phases with offset
+                float groupPhaseOffset = (float)g * 2.0f * 3.14159265f / 3.0f; // 120° offset per group
+                float objectPhase = phase + groupPhaseOffset;
+                
+                // Independent color animation for each group
+                if (g == 0) { // Center group - Red dominant
+                    obj.colorTop.x = 0.7f + 0.3f * sin(2.0f * 3.14159265f * objectPhase);
+                    obj.colorTop.y = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 1.0f);
+                    obj.colorTop.z = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 2.0f);
+                } else if (g == 1) { // Right group - Green dominant
+                    obj.colorTop.x = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 1.0f);
+                    obj.colorTop.y = 0.7f + 0.3f * sin(2.0f * 3.14159265f * objectPhase);
+                    obj.colorTop.z = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 2.0f);
+                } else { // Left group - Blue dominant
+                    obj.colorTop.x = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 2.0f);
+                    obj.colorTop.y = 0.2f + 0.2f * sin(2.0f * 3.14159265f * objectPhase + 1.0f);
+                    obj.colorTop.z = 0.7f + 0.3f * sin(2.0f * 3.14159265f * objectPhase);
+                }
+                
+                // Side colors with group-specific patterns
+                obj.colorLeft.x = 0.5f + 0.5f * sin(t + 1.0f + (float)i * 0.2f + groupPhaseOffset);
+                obj.colorLeft.y = 0.5f + 0.5f * sin(t + 3.0f + (float)i * 0.2f + groupPhaseOffset);
+                obj.colorLeft.z = 0.5f + 0.5f * sin(t + 5.0f + (float)i * 0.2f + groupPhaseOffset);
+                obj.colorRight.x = 0.5f + 0.5f * sin(t + 2.0f + (float)i * 0.2f + groupPhaseOffset);
+                obj.colorRight.y = 0.5f + 0.5f * sin(t + 4.0f + (float)i * 0.2f + groupPhaseOffset);
+                obj.colorRight.z = 0.5f + 0.5f * sin(t + 6.0f + (float)i * 0.2f + groupPhaseOffset);
             }
         }
         // 3. Randomización y recreación de shapes por grupo (MEJORADA)
@@ -866,12 +2402,35 @@ int main() {
             VisualObjectParams& obj = groups[g].objects[0];
             VisualObjectTargets& tgt = groups[g].targets[0];
             
+            // AUDIO-DRIVEN RANDOMIZATION: Use audio frequencies to drive randomization
+            float audioRandomFactor = 1.0f;
+            if (audioReactive && !spectrum.empty()) {
+                // Use different frequency bands for different groups
+                if (g == 0) { // Center - Bass driven
+                    audioRandomFactor = currentAudio.bass * 2.0f;
+                } else if (g == 1) { // Right - Mid driven
+                    audioRandomFactor = currentAudio.mid * 2.0f;
+                } else { // Left - Treble driven
+                    audioRandomFactor = currentAudio.treble * 2.0f;
+                }
+                
+                // Clamp audio factor
+                audioRandomFactor = std::max(0.1f, std::min(3.0f, audioRandomFactor));
+            }
+            
             // Sistema de randomización más natural con intervalos variables
             bool shouldRandomize = false;
             if (randomize) {
                 // Calcular si es momento de randomizar basado en intervalos variables
                 float timeSinceLastRandom = currentTime - lastRandomizeTime[g];
                 float currentInterval = randomizeIntervals[g] + randomizeVariation[g] * sin(currentTime * 0.3f + g);
+                
+                // AUDIO-DRIVEN INTERVALS: Audio affects randomization frequency
+                if (audioReactive && !spectrum.empty()) {
+                    float audioIntensity = (currentAudio.bass + currentAudio.mid + currentAudio.treble) / 3.0f;
+                    currentInterval *= (1.0f - audioIntensity * 0.5f); // Faster randomization with more audio
+                    currentInterval = std::max(0.1f, currentInterval); // Minimum interval
+                }
                 
                 if (timeSinceLastRandom >= currentInterval) {
                     shouldRandomize = true;
@@ -890,7 +2449,7 @@ int main() {
                 int max = randomLimits.shapeMax;
                 tgtShapeType[g] = min + rand() % (max - min + 1);
             }
-            obj.shapeType += (int)((tgtShapeType[g] - obj.shapeType) * randomLerpSpeed + 0.5f);
+            obj.shapeType += (int)((tgtShapeType[g] - obj.shapeType) * randomLerpSpeed * audioRandomFactor + 0.5f);
             
             // Randomizar nSegments por grupo
             static int tgtNSegments[3] = {obj.nSegments, obj.nSegments, obj.nSegments};
@@ -899,91 +2458,109 @@ int main() {
                 int max = randomLimits.segMax;
                 tgtNSegments[g] = min + rand() % (max - min + 1);
             }
-            obj.nSegments += (int)((tgtNSegments[g] - obj.nSegments) * randomLerpSpeed + 0.5f);
+            obj.nSegments += (int)((tgtNSegments[g] - obj.nSegments) * randomLerpSpeed * audioRandomFactor + 0.5f);
             
             // Inicializar targets si es la primera vez
             if (tgt.target.triSize == 0.0f) tgt.target = obj;
             
             if (randomize) {
-                // triSize
-                if (shouldRandomize && randomAffect.triSize)
+                // AUDIO-DRIVEN RANDOMIZATION: Apply audio factor to all random changes
+                float adjustedLerpSpeed = randomLerpSpeed * audioRandomFactor;
+                
+                // triSize - only if selected
+                if (shouldRandomize && randomAffect.triSize) {
                     tgt.target.triSize = randomLimits.sizeMin + frand() * (randomLimits.sizeMax - randomLimits.sizeMin);
-                obj.triSize += (tgt.target.triSize - obj.triSize) * randomLerpSpeed;
+                    obj.triSize += (tgt.target.triSize - obj.triSize) * adjustedLerpSpeed;
+                }
                 
-                // rotationSpeed
-                if (shouldRandomize && randomAffect.rotationSpeed)
+                // rotationSpeed - only if selected
+                if (shouldRandomize && randomAffect.rotationSpeed) {
                     tgt.target.rotationSpeed = randomLimits.speedMin + frand() * (randomLimits.speedMax - randomLimits.speedMin);
-                obj.rotationSpeed += (tgt.target.rotationSpeed - obj.rotationSpeed) * randomLerpSpeed;
+                    obj.rotationSpeed += (tgt.target.rotationSpeed - obj.rotationSpeed) * adjustedLerpSpeed;
+                }
                 
-                // angle
-                if (shouldRandomize && randomAffect.angle)
+                // angle - only if selected
+                if (shouldRandomize && randomAffect.angle) {
                     tgt.target.angle = frand() * 2.0f * 3.14159265f;
-                obj.angle += (tgt.target.angle - obj.angle) * randomLerpSpeed;
+                    obj.angle += (tgt.target.angle - obj.angle) * adjustedLerpSpeed;
+                }
                 
-                // translateX
-                if (shouldRandomize && randomAffect.translateX)
+                // translateX - only if selected
+                if (shouldRandomize && randomAffect.translateX) {
                     tgt.target.translateX = randomLimits.txMin + frand() * (randomLimits.txMax - randomLimits.txMin);
-                obj.translateX += (tgt.target.translateX - obj.translateX) * randomLerpSpeed;
+                    obj.translateX += (tgt.target.translateX - obj.translateX) * adjustedLerpSpeed;
+                }
                 
-                // translateY
-                if (shouldRandomize && randomAffect.translateY)
+                // translateY - only if selected
+                if (shouldRandomize && randomAffect.translateY) {
                     tgt.target.translateY = randomLimits.tyMin + frand() * (randomLimits.tyMax - randomLimits.tyMin);
-                obj.translateY += (tgt.target.translateY - obj.translateY) * randomLerpSpeed;
+                    obj.translateY += (tgt.target.translateY - obj.translateY) * adjustedLerpSpeed;
+                }
                 
-                // scaleX
-                if (shouldRandomize && randomAffect.scaleX)
+                // scaleX - only if selected
+                if (shouldRandomize && randomAffect.scaleX) {
                     tgt.target.scaleX = randomLimits.sxMin + frand() * (randomLimits.sxMax - randomLimits.sxMin);
-                obj.scaleX += (tgt.target.scaleX - obj.scaleX) * randomLerpSpeed;
+                    obj.scaleX += (tgt.target.scaleX - obj.scaleX) * adjustedLerpSpeed;
+                }
                 
-                // scaleY
-                if (shouldRandomize && randomAffect.scaleY)
+                // scaleY - only if selected
+                if (shouldRandomize && randomAffect.scaleY) {
                     tgt.target.scaleY = randomLimits.syMin + frand() * (randomLimits.syMax - randomLimits.syMin);
-                obj.scaleY += (tgt.target.scaleY - obj.scaleY) * randomLerpSpeed;
-                
-                // colorTop
-                if (shouldRandomize && randomAffect.colorTop) for (int c = 0; c < 3; ++c) {
-                    ((float*)&tgt.target.colorTop)[c] = randomLimits.colorMin + frand() * (randomLimits.colorMax - randomLimits.colorMin);
-                }
-                for (int c = 0; c < 3; ++c) {
-                    ((float*)&obj.colorTop)[c] += (((float*)&tgt.target.colorTop)[c] - ((float*)&obj.colorTop)[c]) * randomLerpSpeed;
+                    obj.scaleY += (tgt.target.scaleY - obj.scaleY) * adjustedLerpSpeed;
                 }
                 
-                // colorLeft
-                if (shouldRandomize && randomAffect.colorLeft) for (int c = 0; c < 3; ++c) {
-                    ((float*)&tgt.target.colorLeft)[c] = randomLimits.colorMin + frand() * (randomLimits.colorMax - randomLimits.colorMin);
-                }
-                for (int c = 0; c < 3; ++c) {
-                    ((float*)&obj.colorLeft)[c] += (((float*)&tgt.target.colorLeft)[c] - ((float*)&obj.colorLeft)[c]) * randomLerpSpeed;
-                }
-                
-                // colorRight
-                if (shouldRandomize && randomAffect.colorRight) for (int c = 0; c < 3; ++c) {
-                    ((float*)&tgt.target.colorRight)[c] = randomLimits.colorMin + frand() * (randomLimits.colorMax - randomLimits.colorMin);
-                }
-                for (int c = 0; c < 3; ++c) {
-                    ((float*)&obj.colorRight)[c] += (((float*)&tgt.target.colorRight)[c] - ((float*)&obj.colorRight)[c]) * randomLerpSpeed;
-                }
-                
-                // groupAngle para cada grupo
-                static float tgtGroupAngle[3] = {groups[0].groupAngle, groups[1].groupAngle, groups[2].groupAngle};
-                if (shouldRandomize && randomAffect.groupAngle) {
-                    tgtGroupAngle[g] = frand() * 2.0f * 3.14159265f;
-                }
-                groups[g].groupAngle += (tgtGroupAngle[g] - groups[g].groupAngle) * randomLerpSpeed;
-                
-                // Randomizar cantidad de objetos por grupo
-                static int tgtNumObjects[3] = {groups[0].numObjects, groups[1].numObjects, groups[2].numObjects};
-                if (shouldRandomize) {
-                    if (randomAffect.numCenter && g == 0) {
-                        tgtNumObjects[g] = randomLimits.numCenterMin + rand() % (randomLimits.numCenterMax - randomLimits.numCenterMin + 1);
-                    } else if (randomAffect.numRight && g == 1) {
-                        tgtNumObjects[g] = randomLimits.numRightMin + rand() % (randomLimits.numRightMax - randomLimits.numRightMin + 1);
-                    } else if (randomAffect.numLeft && g == 2) {
-                        tgtNumObjects[g] = randomLimits.numLeftMin + rand() % (randomLimits.numLeftMax - randomLimits.numLeftMin + 1);
+                // colorTop - only if selected
+                if (shouldRandomize && randomAffect.colorTop) {
+                    for (int c = 0; c < 3; ++c) {
+                        ((float*)&tgt.target.colorTop)[c] = randomLimits.colorMin + frand() * (randomLimits.colorMax - randomLimits.colorMin);
+                    }
+                    for (int c = 0; c < 3; ++c) {
+                        ((float*)&obj.colorTop)[c] += (((float*)&tgt.target.colorTop)[c] - ((float*)&obj.colorTop)[c]) * adjustedLerpSpeed;
                     }
                 }
-                groups[g].numObjects += (int)((tgtNumObjects[g] - groups[g].numObjects) * randomLerpSpeed + 0.5f);
-                groups[g].numObjects = std::max(0, std::min(100, groups[g].numObjects)); // Limitar a 0-100
+                
+                // colorLeft - only if selected
+                if (shouldRandomize && randomAffect.colorLeft) {
+                    for (int c = 0; c < 3; ++c) {
+                        ((float*)&tgt.target.colorLeft)[c] = randomLimits.colorMin + frand() * (randomLimits.colorMax - randomLimits.colorMin);
+                    }
+                    for (int c = 0; c < 3; ++c) {
+                        ((float*)&obj.colorLeft)[c] += (((float*)&tgt.target.colorLeft)[c] - ((float*)&obj.colorLeft)[c]) * adjustedLerpSpeed;
+                    }
+                }
+                
+                // colorRight - only if selected
+                if (shouldRandomize && randomAffect.colorRight) {
+                    for (int c = 0; c < 3; ++c) {
+                        ((float*)&tgt.target.colorRight)[c] = randomLimits.colorMin + frand() * (randomLimits.colorMax - randomLimits.colorMin);
+                    }
+                    for (int c = 0; c < 3; ++c) {
+                        ((float*)&obj.colorRight)[c] += (((float*)&tgt.target.colorRight)[c] - ((float*)&obj.colorRight)[c]) * adjustedLerpSpeed;
+                    }
+                }
+                
+                // groupAngle para cada grupo - only if selected
+                if (shouldRandomize && randomAffect.groupAngle) {
+                    static float tgtGroupAngle[3] = {groups[0].groupAngle, groups[1].groupAngle, groups[2].groupAngle};
+                    tgtGroupAngle[g] = frand() * 2.0f * 3.14159265f;
+                    groups[g].groupAngle += (tgtGroupAngle[g] - groups[g].groupAngle) * adjustedLerpSpeed;
+                }
+                
+                // Randomizar cantidad de objetos por grupo - only if selected
+                if (shouldRandomize) {
+                    static int tgtNumObjects[3] = {groups[0].numObjects, groups[1].numObjects, groups[2].numObjects};
+                    if (randomAffect.numCenter && g == 0) {
+                        tgtNumObjects[g] = randomLimits.numCenterMin + rand() % (randomLimits.numCenterMax - randomLimits.numCenterMin + 1);
+                        groups[g].numObjects += (int)((tgtNumObjects[g] - groups[g].numObjects) * adjustedLerpSpeed + 0.5f);
+                    } else if (randomAffect.numRight && g == 1) {
+                        tgtNumObjects[g] = randomLimits.numRightMin + rand() % (randomLimits.numRightMax - randomLimits.numRightMin + 1);
+                        groups[g].numObjects += (int)((tgtNumObjects[g] - groups[g].numObjects) * adjustedLerpSpeed + 0.5f);
+                    } else if (randomAffect.numLeft && g == 2) {
+                        tgtNumObjects[g] = randomLimits.numLeftMin + rand() % (randomLimits.numLeftMax - randomLimits.numLeftMin + 1);
+                        groups[g].numObjects += (int)((tgtNumObjects[g] - groups[g].numObjects) * adjustedLerpSpeed + 0.5f);
+                    }
+                    groups[g].numObjects = std::max(0, std::min(100, groups[g].numObjects)); // Limitar a 0-100
+                }
             }
             // Si cambió el tamaño, los colores o la figura, recrear el shape
             float curColorTop[3] = {obj.colorTop.x, obj.colorTop.y, obj.colorTop.z};
@@ -1006,11 +2583,30 @@ int main() {
             
             // Para fractales, regenerar cada frame para la animación
             bool shouldRegenerate = obj.triSize != prevSize || colorChanged || shapeChanged || fractalChanged;
-            if (fractalMode) shouldRegenerate = true; // Siempre regenerar fractales
+            // OPTIMIZATION: Reduce fractal regeneration frequency
+            if (fractalMode) {
+                static float lastFractalUpdate = 0.0f;
+                float fractalUpdateInterval = 0.1f; // Update every 100ms instead of every frame
+                shouldRegenerate = shouldRegenerate || (currentTime - lastFractalUpdate > fractalUpdateInterval);
+                if (shouldRegenerate) lastFractalUpdate = currentTime;
+            }
             
             if (shouldRegenerate) {
-                glDeleteVertexArrays(1, &VAO);
-                glDeleteBuffers(1, &VBO);
+                // OPTIMIZATION: Only delete and recreate if we have a valid cached VBO
+                if (currentCachedVBO) {
+                    // Find and remove the current VBO from cache
+                    for (auto it = vboCache.begin(); it != vboCache.end(); ++it) {
+                        if (&(*it) == currentCachedVBO) {
+                            if (it->VAO) glDeleteVertexArrays(1, &it->VAO);
+                            if (it->VBO) glDeleteBuffers(1, &it->VBO);
+                            if (it->instanceVBO) glDeleteBuffers(1, &it->instanceVBO);
+                            vboCache.erase(it);
+                            break;
+                        }
+                    }
+                    currentCachedVBO = nullptr;
+                }
+                
                 // Antes de crear el shape, si onlyRGB está activo, forzar colores a RGB puros
                 if (onlyRGB) {
                     curColorTop[0] = 1.0f; curColorTop[1] = 0.0f; curColorTop[2] = 0.0f;
@@ -1018,13 +2614,14 @@ int main() {
                     curColorRight[0] = 0.0f; curColorRight[1] = 0.0f; curColorRight[2] = 1.0f;
                 }
                 
-                if (fractalMode) {
-                    // Verificar que el shapeType sea válido para fractales (0-4, todos soportados ahora)
-                    int fractalShapeType = (obj.shapeType >= 0 && obj.shapeType <= 4) ? obj.shapeType : 0;
-                    createFractal(VAO, VBO, fractalShapeType, obj.triSize, curColorTop, curColorLeft, curColorRight, fractalDepth, currentTime);
-                } else {
-                    createShape(VAO, VBO, obj.shapeType, obj.triSize, curColorTop, curColorLeft, curColorRight, actualSegments);
-                }
+                // OPTIMIZATION: Create new cached VBO
+                float newColors[9] = {curColorTop[0], curColorTop[1], curColorTop[2],
+                                    curColorLeft[0], curColorLeft[1], curColorLeft[2],
+                                    curColorRight[0], curColorRight[1], curColorRight[2]};
+                
+                currentCachedVBO = findOrCreateCachedVBO(
+                    obj.shapeType, obj.triSize, newColors, actualSegments, fractalMode, fractalDepth
+                );
                 
                 prevSize = obj.triSize;
                 for (int i = 0; i < 3; ++i) {
@@ -1074,12 +2671,114 @@ int main() {
             groupSeparation += (targetGroupSeparation - groupSeparation) * randomLerpSpeed;
         }
 
-        // Render ImGui
-        ImGui::Render();
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        // OPTIMIZATION: Clear screen once at the beginning
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        glfwSwapBuffers(window);
-        glfwPollEvents();
+        // OPTIMIZATION: Prepare instance data for all groups
+        std::vector<InstanceData> allInstances;
+        allInstances.clear();
+        
+        // AUDIO TEST MODE: Render single test triangle if enabled
+        if (audioTestMode.enabled) {
+            // Create single test instance
+            InstanceData testInstance;
+            testInstance.offsetX = audioTestMode.testPosX;
+            testInstance.offsetY = audioTestMode.testPosY;
+            testInstance.angle = audioTestMode.testRotation * (3.14159265f / 180.0f); // Convert to radians
+            testInstance.scaleX = audioTestMode.testSize;
+            testInstance.scaleY = audioTestMode.testSize;
+            allInstances.push_back(testInstance);
+            
+            // Use test colors for VBO
+            float testColors[9] = {
+                audioTestMode.testColor.x, audioTestMode.testColor.y, audioTestMode.testColor.z,
+                audioTestMode.testColor.x, audioTestMode.testColor.y, audioTestMode.testColor.z,
+                audioTestMode.testColor.x, audioTestMode.testColor.y, audioTestMode.testColor.z
+            };
+            
+            // Create or update VBO for test triangle
+            CachedVBO* testVBO = findOrCreateCachedVBO(
+                SHAPE_TRIANGLE, // Always triangle for test
+                audioTestMode.testSize,
+                testColors,
+                3, // Triangle has 3 vertices
+                false, // No fractal for test
+                0.0f
+            );
+            
+            // Render test triangle
+            if (testVBO && !allInstances.empty()) {
+                renderBatch(testVBO, allInstances, shaderProgram, (float)width / (float)height);
+            }
+        } else {
+            // Normal rendering for all groups
+            for (int g = 0; g < 3; ++g) {
+                VisualObjectParams& obj = groups[g].objects[0];
+                float baseX = (g == 0) ? 0.0f : (g == 1) ? groupSeparation : -groupSeparation;
+                
+                // CENTERED RENDERING: Scale positions to fit within screen bounds
+                float screenAspect = (float)width / (float)height;
+                float maxX = 1.0f; // 80% of screen width
+                float maxY = 1.0f; // 80% of screen height
+                
+                for (int i = 0; i < groups[g].numObjects; ++i) {
+                    float theta = (2.0f * 3.14159265f * i) / std::max(1, groups[g].numObjects) + groups[g].groupAngle;
+                    float r = 0.3f; // Reduced radius for better centering
+                    float tx = baseX + obj.translateX + r * cos(theta);
+                    float ty = obj.translateY + r * sin(theta);
+                    
+                    // Clamp positions to screen bounds
+                    tx = std::max(-maxX, std::min(maxX, tx));
+                    ty = std::max(-maxY, std::min(maxY, ty));
+                    
+                    InstanceData instance;
+                    instance.offsetX = tx;
+                    instance.offsetY = ty;
+                    instance.angle = obj.angle;
+                    instance.scaleX = obj.scaleX;
+                    instance.scaleY = obj.scaleY;
+                    allInstances.push_back(instance);
+                }
+            }
+            
+            // OPTIMIZATION: Update cached VBO if needed
+            float colors[9] = {colorTopArr[0], colorTopArr[1], colorTopArr[2],
+                              colorLeftArr[0], colorLeftArr[1], colorLeftArr[2],
+                              colorRightArr[0], colorRightArr[1], colorRightArr[2]};
+            
+            bool needNewVBO = false;
+            if (!currentCachedVBO || 
+                currentCachedVBO->shapeType != groups[0].objects[0].shapeType ||
+                currentCachedVBO->size != groups[0].objects[0].triSize ||
+                currentCachedVBO->fractalMode != fractalMode ||
+                currentCachedVBO->fractalDepth != fractalDepth) {
+                needNewVBO = true;
+            }
+            
+            for (int i = 0; i < 9; ++i) {
+                if (fabs(currentCachedVBO->colors[i] - colors[i]) > 0.001f) {
+                    needNewVBO = true;
+                    break;
+                }
+            }
+            
+            if (needNewVBO) {
+                currentCachedVBO = findOrCreateCachedVBO(
+                    groups[0].objects[0].shapeType,
+                    groups[0].objects[0].triSize,
+                    colors,
+                    groups[0].objects[0].nSegments,
+                    fractalMode,
+                    fractalDepth
+                );
+            }
+            
+            // OPTIMIZATION: Render all instances in one batch
+            if (currentCachedVBO && !allInstances.empty()) {
+                renderBatch(currentCachedVBO, allInstances, shaderProgram, (float)width / (float)height);
+            }
+        }
 
         // FPS custom: sleep si es necesario
         if (fpsMode == FPS_CUSTOM && customFps > 0) {
@@ -1091,50 +2790,261 @@ int main() {
             }
         }
 
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f); // Fondo negro
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glUseProgram(shaderProgram);
-        GLint angleLoc = glGetUniformLocation(shaderProgram, "uAngle");
-        float aspect = (float)width / (float)height;
-        GLint aspectLoc = glGetUniformLocation(shaderProgram, "uAspect");
-        GLint translateLoc = glGetUniformLocation(shaderProgram, "uTranslate");
-        GLint scaleLoc = glGetUniformLocation(shaderProgram, "uScale");
-        glUniform1f(aspectLoc, aspect);
-        for (int g = 0; g < 3; ++g) {
-            VisualObjectParams& obj = groups[g].objects[0];
-            float baseX = (g == 0) ? 0.0f : (g == 1) ? groupSeparation : -groupSeparation;
-            glUniform2f(scaleLoc, obj.scaleX, obj.scaleY);
-            glUniform1f(angleLoc, obj.angle);
-            glBindVertexArray(VAO);
-            for (int i = 0; i < groups[g].numObjects; ++i) {
-                float theta = (2.0f * 3.14159265f * i) / std::max(1, groups[g].numObjects) + groups[g].groupAngle;
-                float r = 0.5f;
-                float tx = baseX + obj.translateX + r * cos(theta);
-                float ty = obj.translateY + r * sin(theta);
-                glUniform2f(translateLoc, tx, ty);
-                if (fractalMode) {
-                    // Para fractales, usar GL_TRIANGLES ya que createFractal genera triángulos
-                    // Usar un número más conservador de vértices
-                    glDrawArrays(GL_TRIANGLES, 0, 3000); // Suficientes vértices para el fractal
-                } else {
-                    if (obj.shapeType == 0) glDrawArrays(GL_TRIANGLES, 0, 3);
-                    else if (obj.shapeType == 1) glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-                    else if (obj.shapeType == 2) glDrawArrays(GL_TRIANGLE_FAN, 0, 130);
-                    else if (obj.shapeType == 3) glDrawArrays(GL_LINES, 0, 2);
-                    else if (obj.shapeType == 4) glDrawArrays(GL_LINES, 0, 12);
+        // AUDIO TEST MODE WINDOW: Para probar audio reactivo fácilmente
+        if (uiVisibility.showAudioTestMode) {
+            ImGui::SetNextWindowPos(ImVec2(width - 400, height - 400), ImGuiCond_Once);
+            ImGui::SetNextWindowSize(ImVec2(380, 380), ImGuiCond_Once);
+            ImGui::Begin("🧪 Modo de Prueba de Audio");
+            
+            // Estado del modo de prueba
+            ImGui::Text("🎯 Modo de Prueba de Audio Reactivo");
+            ImGui::Checkbox("Activar Modo de Prueba", &audioTestMode.enabled);
+            
+            if (audioTestMode.enabled) {
+                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "✅ MODO ACTIVO - Solo se muestra 1 triángulo de prueba");
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "❌ MODO INACTIVO - Visualización normal");
+            }
+            
+            ImGui::Separator();
+            
+            // Controles de audio
+            ImGui::Text("🎵 Fuente de Audio:");
+            ImGui::Checkbox("Usar valores manuales (simular audio)", &audioTestMode.useManualValues);
+            
+            if (audioTestMode.useManualValues) {
+                ImGui::Text("🎛️ Controles Manuales:");
+                ImGui::SliderFloat("Bass Manual", &audioTestMode.manualBass, 0.0f, 1.0f, "%.2f");
+                ImGui::SliderFloat("Mid Manual", &audioTestMode.manualMid, 0.0f, 1.0f, "%.2f");
+                ImGui::SliderFloat("Treble Manual", &audioTestMode.manualTreble, 0.0f, 1.0f, "%.2f");
+            } else {
+                ImGui::Text("📊 Valores Reales de Audio:");
+                ImGui::Text("Bass: %.3f", audioTestMode.bassTest);
+                ImGui::Text("Mid: %.3f", audioTestMode.midTest);
+                ImGui::Text("Treble: %.3f", audioTestMode.trebleTest);
+                ImGui::Text("Overall: %.3f", audioTestMode.overallTest);
+            }
+            
+            ImGui::Separator();
+            
+            // Controles de efectos
+            ImGui::Text("🎨 Efectos a Probar:");
+            ImGui::Checkbox("Color (RGB = Bass/Mid/Treble)", &audioTestMode.testColorEnabled);
+            ImGui::Checkbox("Tamaño (Overall)", &audioTestMode.testSizeEnabled);
+            ImGui::Checkbox("Rotación (Mid)", &audioTestMode.testRotationEnabled);
+            ImGui::Checkbox("Posición (Bass/Treble)", &audioTestMode.testPositionEnabled);
+            ImGui::Checkbox("Cantidad (Overall)", &audioTestMode.testQuantityEnabled);
+            
+            ImGui::Separator();
+            
+            // Valores actuales del objeto de prueba
+            ImGui::Text("📐 Valores Actuales del Objeto:");
+            ImGui::Text("Tamaño: %.2f", audioTestMode.testSize);
+            ImGui::Text("Rotación: %.1f°", audioTestMode.testRotation);
+            ImGui::Text("Posición: (%.2f, %.2f)", audioTestMode.testPosX, audioTestMode.testPosY);
+            ImGui::Text("Cantidad: %d", audioTestMode.testQuantity);
+            ImGui::ColorEdit3("Color", (float*)&audioTestMode.testColor);
+            
+            ImGui::Separator();
+            
+            // Controles rápidos
+            ImGui::Text("⚡ Controles Rápidos:");
+            if (ImGui::Button("Reset Objeto")) {
+                audioTestMode.reset();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Test Bass")) {
+                audioTestMode.useManualValues = true;
+                audioTestMode.manualBass = 1.0f;
+                audioTestMode.manualMid = 0.0f;
+                audioTestMode.manualTreble = 0.0f;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Test Mid")) {
+                audioTestMode.useManualValues = true;
+                audioTestMode.manualBass = 0.0f;
+                audioTestMode.manualMid = 1.0f;
+                audioTestMode.manualTreble = 0.0f;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Test Treble")) {
+                audioTestMode.useManualValues = true;
+                audioTestMode.manualBass = 0.0f;
+                audioTestMode.manualMid = 0.0f;
+                audioTestMode.manualTreble = 1.0f;
+            }
+            
+            ImGui::End();
+        }
+
+        // AUDIO TEST MODE: Update test mode with current audio data
+        audioTestMode.updateFromAudio(currentAudio);
+
+        // PRESETS WINDOW: Predefined animation configurations
+        if (uiVisibility.showPresets) {
+            ImGui::SetNextWindowPos(ImVec2(width - 450, height - 600), ImGuiCond_Once);
+            ImGui::SetNextWindowSize(ImVec2(430, 580), ImGuiCond_Once);
+            ImGui::Begin("🎨 Presets de Animación");
+            
+            ImGui::Text("🌟 Presets Predefinidos");
+            ImGui::Text("Selecciona una animación para aplicarla instantáneamente");
+            ImGui::Separator();
+            
+            // Display presets in a grid
+            for (int i = 0; i < animationPresets.size(); ++i) {
+                const AnimationPreset& preset = animationPresets[i];
+                
+                // Create a card-like layout for each preset
+                ImGui::BeginChild(("preset_" + std::to_string(i)).c_str(), ImVec2(200, 120), true);
+                
+                // Preset name and description
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "%s", preset.name.c_str());
+                ImGui::TextWrapped("%s", preset.description.c_str());
+                
+                // Preset details
+                ImGui::Text("Centro: %s x%d", shapeNames[preset.center.shapeType], preset.center.numObjects);
+                ImGui::Text("Derecha: %s x%d", shapeNames[preset.right.shapeType], preset.right.numObjects);
+                ImGui::Text("Izquierda: %s x%d", shapeNames[preset.left.shapeType], preset.left.numObjects);
+                
+                // Audio preset info
+                if (preset.audioReactive) {
+                    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "🎵 Audio: %s", 
+                                      audioPresets[preset.audioPresetIndex].name.c_str());
+                }
+                
+                // Apply button
+                if (ImGui::Button(("Aplicar##" + std::to_string(i)).c_str())) {
+                    // Apply the preset
+                    preset.apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation);
+                    
+                    // Apply audio preset if audio reactive
+                    if (preset.audioReactive && preset.audioPresetIndex < audioPresets.size()) {
+                        for (int g = 0; g < 3; ++g) {
+                            applyAudioPreset(audioGroups[g], audioPresets[preset.audioPresetIndex]);
+                        }
+                    }
+                    
+                    // Set fractal mode if any group uses it
+                    fractalMode = preset.center.fractalMode || preset.right.fractalMode || preset.left.fractalMode;
+                    if (fractalMode) {
+                        fractalDepth = preset.center.fractalDepth; // Use center as default
+                    }
+                    
+                    // Force VBO regeneration
+                    currentCachedVBO = nullptr;
+                    
+                    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "✅ Preset aplicado!");
+                }
+                
+                ImGui::EndChild();
+                
+                // Arrange in 2 columns
+                if (i % 2 == 0 && i + 1 < animationPresets.size()) {
+                    ImGui::SameLine();
                 }
             }
-            glBindVertexArray(0);
+            
+            ImGui::Separator();
+            
+            // Quick preset categories
+            ImGui::Text("⚡ Acceso Rápido por Categoría:");
+            
+            if (ImGui::Button("🎯 Cilindros y Donas")) {
+                // Apply first two presets
+                animationPresets[0].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation);
+                for (int g = 0; g < 3; ++g) {
+                    applyAudioPreset(audioGroups[g], audioPresets[3]); // Full Spectrum
+                }
+                currentCachedVBO = nullptr;
+            }
+            ImGui::SameLine();
+            
+            if (ImGui::Button("✨ Fractales")) {
+                animationPresets[2].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation);
+                fractalMode = true;
+                fractalDepth = 4.0f;
+                for (int g = 0; g < 3; ++g) {
+                    applyAudioPreset(audioGroups[g], audioPresets[6]); // Chaos Mode
+                }
+                currentCachedVBO = nullptr;
+            }
+            ImGui::SameLine();
+            
+            if (ImGui::Button("⚡ Líneas")) {
+                animationPresets[3].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation);
+                for (int g = 0; g < 3; ++g) {
+                    applyAudioPreset(audioGroups[g], audioPresets[4]); // Full Spectrum
+                }
+                currentCachedVBO = nullptr;
+            }
+            
+            ImGui::SameLine();
+            if (ImGui::Button("🌀 Vórtices")) {
+                animationPresets[9].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation);
+                fractalMode = true;
+                fractalDepth = 3.0f;
+                for (int g = 0; g < 3; ++g) {
+                    applyAudioPreset(audioGroups[g], audioPresets[6]); // Chaos Mode
+                }
+                currentCachedVBO = nullptr;
+            }
+            
+            ImGui::SameLine();
+            if (ImGui::Button("🧠 Neural")) {
+                animationPresets[10].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation);
+                for (int g = 0; g < 3; ++g) {
+                    applyAudioPreset(audioGroups[g], audioPresets[0]); // Bass Dominant
+                }
+                currentCachedVBO = nullptr;
+            }
+            
+            ImGui::Separator();
+            
+            // Preset info
+            ImGui::Text("💡 Información:");
+            ImGui::Text("• Los presets incluyen configuraciones completas de audio");
+            ImGui::Text("• Cada preset tiene colores y formas únicas");
+            ImGui::Text("• Algunos presets activan automáticamente el modo fractal");
+            ImGui::Text("• Los presets se pueden combinar con controles manuales");
+            ImGui::Text("• Total de presets disponibles: %d", (int)animationPresets.size());
+            
+            ImGui::Separator();
+            
+            // Preset categories
+            ImGui::Text("📂 Categorías de Presets:");
+            ImGui::Text("🎯 Cilindros/Donas: Presets 1-2");
+            ImGui::Text("✨ Fractales: Preset 3");
+            ImGui::Text("⚡ Líneas: Presets 4, 8");
+            ImGui::Text("🌊 Pulsos: Preset 5");
+            ImGui::Text("🌌 Espirales: Preset 6");
+            ImGui::Text("💎 Cristales: Preset 7");
+            ImGui::Text("🌀 Vórtices: Preset 9");
+            ImGui::Text("🧠 Neural: Preset 10");
+            
+            ImGui::End();
         }
-    }
+
+        // Render ImGui
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    } // End of main while loop
 
     // Cleanup ImGui
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteBuffers(1, &VBO);
+    // OPTIMIZATION: Cleanup all cached VBOs
+    for (auto& cached : vboCache) {
+        if (cached.VAO) glDeleteVertexArrays(1, &cached.VAO);
+        if (cached.VBO) glDeleteBuffers(1, &cached.VBO);
+        if (cached.instanceVBO) glDeleteBuffers(1, &cached.instanceVBO);
+    }
+    vboCache.clear();
+    
     glDeleteProgram(shaderProgram);
     glfwDestroyWindow(window);
     glfwTerminate();
