@@ -1454,23 +1454,13 @@ int main() {
             lastImGuiUpdate = currentTime;
         }
 
-        // Ventana izquierda: controles principales
+        // Ventana izquierda: controles principales + monitor de sistema + opciones globales
         if (shouldUpdateImGui && uiVisibility.showMainControls) {
             ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Once);
-            ImGui::Begin("Triángulo");
+            ImGui::Begin("Triángulo (Opciones Globales) + Monitor del sistema");
             ImGui::SliderFloat("Tamaño", &groups[0].objects[0].triSize, 0.1f, 2.0f, "%.2f");
             ImGui::SliderAngle("Rotación", &groups[0].objects[0].angle, 0.0f, 360.0f);
-            ImGui::Checkbox("Rotación automática", &autoRotate);
             ImGui::SliderFloat("Velocidad de rotación (°/s)", &groups[0].objects[0].rotationSpeed, 10.0f, 720.0f, "%.1f");
-            
-            // GLOBAL ROTATION SPEED: Apply to all groups
-            if (ImGui::SliderFloat("Velocidad Global de Rotación (°/s)", &groups[0].objects[0].rotationSpeed, 10.0f, 720.0f, "%.1f")) {
-                // Apply the same rotation speed to all groups
-                for (int g = 1; g < 3; ++g) {
-                    groups[g].objects[0].rotationSpeed = groups[0].objects[0].rotationSpeed;
-                }
-            }
-            
             ImGui::SliderFloat("BPM", &bpm, 30.0f, 300.0f, "%.1f");
             ImGui::Text("Beat phase: %.2f", beatPhase);
             const char* fpsModes[] = { "VSync", "Ilimitado", "Custom" };
@@ -1478,8 +1468,39 @@ int main() {
             if (fpsMode == FPS_CUSTOM) {
                 ImGui::SliderInt("Custom FPS", &customFps, 10, 1000);
             }
-                    ImGui::Text("ESC para salir | H para ocultar/mostrar UI");
-        ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+            ImGui::Text("ESC para salir | H para ocultar/mostrar UI");
+            ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+            ImGui::Separator();
+            // Opciones Globales
+            ImGui::Checkbox("Rotación automática", &autoRotate);
+            ImGui::Checkbox("Animar color", &animateColor);
+            ImGui::Checkbox("Visuales controlados por audio del sistema", &audioReactive);
+            ImGui::Separator();
+            // Debug/Info: Randomización por grupo
+            ImGui::Separator();
+            ImGui::Text("Randomización por grupo:");
+            ImGui::Text("(Usar controles de '¿Qué randomizar?' en la ventana de Randomización)");
+            if (randomize) {
+                ImGui::Text("Estado de randomización:");
+                for (int g = 0; g < 3; ++g) {
+                    const char* groupNames[] = {"Centro", "Derecha", "Izquierda"};
+                    float timeSinceLast = currentTime - lastRandomizeTime[g];
+                    float nextInterval = randomizeIntervals[g] + randomizeVariation[g] * sin(currentTime * 0.3f + g);
+                    float progress = timeSinceLast / nextInterval;
+                    ImGui::Text("%s: %.1fs (%.0f%%)", groupNames[g], nextInterval - timeSinceLast, progress * 100.0f);
+                }
+            }
+            ImGui::Separator();
+            ImGui::SliderFloat("Separación de grupos", &groupSeparation, 0.0f, 2.0f, "%.2f");
+            ImGui::Checkbox("Randomizar separación de grupos", &randomizeGroupSeparation);
+            ImGui::Separator();
+            // Monitor del sistema
+            float cpuUsage = getCPUUsage();
+            float cpuTemp = getCPUTemp();
+            float gpuTemp = getGPUTemp();
+            ImGui::Text("CPU uso: %s", cpuUsage >= 0.0f ? (std::to_string(cpuUsage) + "%").c_str() : "No disponible");
+            ImGui::Text("CPU temp: %s", cpuTemp >= 0.0f ? (std::to_string(cpuTemp) + " °C").c_str() : "No disponible");
+            ImGui::Text("GPU temp: %s", gpuTemp >= 0.0f ? (std::to_string(gpuTemp) + " °C").c_str() : "No disponible");
             ImGui::End();
         }
 
@@ -1747,20 +1768,6 @@ int main() {
         ImGui::SliderInt("Figura max", &randomLimits.shapeMax, 0, 4);
         ImGui::SliderInt("Segmentos min", &randomLimits.segMin, 3, 256);
         ImGui::SliderInt("Segmentos max", &randomLimits.segMax, 3, 256);
-        ImGui::End();
-        }
-
-        // Ventana monitor del sistema
-        if (uiVisibility.showSystemMonitor) {
-            ImGui::SetNextWindowPos(ImVec2(10, height - 200), ImGuiCond_Once);
-            ImGui::SetNextWindowSize(ImVec2(340, 120), ImGuiCond_Once);
-            ImGui::Begin("Monitor del sistema");
-        float cpuUsage = getCPUUsage();
-        float cpuTemp = getCPUTemp();
-        float gpuTemp = getGPUTemp();
-        ImGui::Text("CPU uso: %s", cpuUsage >= 0.0f ? (std::to_string(cpuUsage) + "%").c_str() : "No disponible");
-        ImGui::Text("CPU temp: %s", cpuTemp >= 0.0f ? (std::to_string(cpuTemp) + " °C").c_str() : "No disponible");
-        ImGui::Text("GPU temp: %s", gpuTemp >= 0.0f ? (std::to_string(gpuTemp) + " °C").c_str() : "No disponible");
         ImGui::End();
         }
 
@@ -2186,25 +2193,18 @@ int main() {
             ImGui::End();
         }
 
-        // UI para animación global
-        if (uiVisibility.showGlobalOptions) {
-            ImGui::Begin("Opciones Globales");
-            ImGui::Checkbox("Rotación automática", &autoRotate);
-            ImGui::Checkbox("Animar color", &animateColor);
-            ImGui::Checkbox("Visuales controlados por audio del sistema", &audioReactive);
-            ImGui::End();
-        }
-
         // --- Inicialización de audio y FFT si es necesario ---
         if (audioReactive && !audioInit) {
             try {
                 // Usar el monitor seleccionado
                 const char* audioDevice = audioMonitors.empty() ? "default" : audioMonitors[selectedMonitor].first.c_str();
-                audio = new AudioCapture(audioDevice, audioSampleRate, audioChannels);
+                int blockSize = audioFftSize; // Use FFT size as block size for now
+                audio = new AudioCapture(audioDevice, audioSampleRate, audioChannels, blockSize);
                 fft = new FFTUtils(audioFftSize);
                 audioBuffer.resize(audioFftSize * audioChannels);
                 monoBuffer.resize(audioFftSize);
                 spectrum.resize(audioFftSize / 2);
+                audio->start();
                 audioInit = true;
                 
                 // Initialize audio groups with default values
@@ -2237,6 +2237,7 @@ int main() {
             }
         }
         if (!audioReactive && audioInit) {
+            if (audio) audio->stop();
             delete audio;
             delete fft;
             audio = nullptr;
@@ -2244,12 +2245,44 @@ int main() {
             audioInit = false;
         }
         // --- Procesamiento de audio y FFT ---
+        static int prevFftSize = audioFftSize;
+        static int currentFftSize = audioFftSize;
+        static const char* fftSizes[] = {"256", "512", "1024", "2048", "4096"};
+        static int fftSizeIndex = 2; // 1024 por defecto
+        // UI FFT size selection (already present in audio graph window)
+        // If user changes FFT size, reinitialize audio and FFT
+        if (fftSizeIndex == 0) currentFftSize = 256;
+        else if (fftSizeIndex == 1) currentFftSize = 512;
+        else if (fftSizeIndex == 2) currentFftSize = 1024;
+        else if (fftSizeIndex == 3) currentFftSize = 2048;
+        else if (fftSizeIndex == 4) currentFftSize = 4096;
+        if (currentFftSize != prevFftSize && audioReactive) {
+            // Stop and delete old audio/FFT
+            if (audioInit) {
+                if (audio) audio->stop();
+                delete audio;
+                delete fft;
+                audio = nullptr;
+                fft = nullptr;
+                audioInit = false;
+            }
+            // Reinitialize with new FFT size
+            int blockSize = currentFftSize;
+            const char* audioDevice = audioMonitors.empty() ? "default" : audioMonitors[selectedMonitor].first.c_str();
+            audio = new AudioCapture(audioDevice, audioSampleRate, audioChannels, blockSize);
+            fft = new FFTUtils(currentFftSize);
+            audioBuffer.resize(currentFftSize * audioChannels);
+            monoBuffer.resize(currentFftSize);
+            spectrum.resize(currentFftSize / 2);
+            audio->start();
+            audioInit = true;
+            prevFftSize = currentFftSize;
+        }
         if (audioReactive && audio && fft) {
             try {
                 float audioStartTime = glfwGetTime(); // Medir tiempo de inicio
-                
-                if (audio->read(audioBuffer)) {
-                    for (int i = 0; i < audioFftSize; ++i) {
+                if (audio->getLatestBlock(audioBuffer)) {
+                    for (int i = 0; i < currentFftSize; ++i) {
                         int32_t left = audioBuffer[i * 2];
                         int32_t right = audioBuffer[i * 2 + 1];
                         monoBuffer[i] = (left + right) / 2.0f / 2147483648.0f;
@@ -2395,28 +2428,8 @@ int main() {
             }
         }
 
-        // 2. UI para randomización por grupo (ahora manejado por randomAffect)
-        ImGui::Separator();
-        ImGui::Text("Randomización por grupo:");
-        ImGui::Text("(Usar controles de '¿Qué randomizar?' en la ventana de Randomización)");
         
-        // Mostrar estado de randomización por grupo
-        if (randomize) {
-            ImGui::Text("Estado de randomización:");
-            for (int g = 0; g < 3; ++g) {
-                const char* groupNames[] = {"Centro", "Derecha", "Izquierda"};
-                float timeSinceLast = currentTime - lastRandomizeTime[g];
-                float nextInterval = randomizeIntervals[g] + randomizeVariation[g] * sin(currentTime * 0.3f + g);
-                float progress = timeSinceLast / nextInterval;
-                
-                ImGui::Text("%s: %.1fs (%.0f%%)", groupNames[g], nextInterval - timeSinceLast, progress * 100.0f);
-            }
-        }
-
-        // 2. UI para separación de grupos
-        ImGui::SliderFloat("Separación de grupos", &groupSeparation, 0.0f, 2.0f, "%.2f");
-        ImGui::Checkbox("Randomizar separación de grupos", &randomizeGroupSeparation);
-
+        
         // --- Actualización de objetos: rotación automática y animación de color ---
         for (int g = 0; g < 3; ++g) {
             // Asegurar que el vector tenga el tamaño correcto
