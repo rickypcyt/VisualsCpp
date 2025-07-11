@@ -1007,7 +1007,8 @@ struct AnimationPreset {
     
     // AnimationPreset::apply - mark as const and remove global assignments
     void apply(VisualGroup groups[3], bool& autoRotate, bool& randomize, 
-               bool& audioReactive, float& bpm, float& groupSeparation) const {
+               bool& audioReactive, float& bpm, float& groupSeparation,
+               RandomLimits& randomLimits, RandomAffectFlags& randomAffect) const {
         // Apply center group
         groups[0].objects[0].shapeType = center.shapeType;
         groups[0].numObjects = center.numObjects;
@@ -1059,6 +1060,72 @@ struct AnimationPreset {
         audioReactive = this->audioReactive;
         bpm = this->bpm;
         groupSeparation = this->groupSeparation;
+        
+        // Configure random limits based on preset type for better randomization
+        if (this->randomize) {
+            // Set appropriate random limits based on the preset characteristics
+            if (center.fractalMode || right.fractalMode || left.fractalMode) {
+                // Fractal presets - more extreme randomization
+                randomLimits.sizeMin = 0.1f; randomLimits.sizeMax = 3.0f;
+                randomLimits.speedMin = 10.0f; randomLimits.speedMax = 500.0f;
+                randomLimits.txMin = -1.5f; randomLimits.txMax = 1.5f;
+                randomLimits.tyMin = -1.5f; randomLimits.tyMax = 1.5f;
+                randomLimits.sxMin = 0.2f; randomLimits.sxMax = 2.5f;
+                randomLimits.syMin = 0.2f; randomLimits.syMax = 2.5f;
+            } else if (center.shapeType == SHAPE_LINE || right.shapeType == SHAPE_LINE || left.shapeType == SHAPE_LINE ||
+                       center.shapeType == SHAPE_LONG_LINES || right.shapeType == SHAPE_LONG_LINES || left.shapeType == SHAPE_LONG_LINES) {
+                // Line presets - moderate randomization
+                randomLimits.sizeMin = 0.05f; randomLimits.sizeMax = 2.0f;
+                randomLimits.speedMin = 50.0f; randomLimits.speedMax = 300.0f;
+                randomLimits.txMin = -1.0f; randomLimits.txMax = 1.0f;
+                randomLimits.tyMin = -1.0f; randomLimits.tyMax = 1.0f;
+                randomLimits.sxMin = 0.5f; randomLimits.sxMax = 3.0f;
+                randomLimits.syMin = 0.1f; randomLimits.syMax = 1.0f;
+            } else if (center.shapeType == SHAPE_CIRCLE || right.shapeType == SHAPE_CIRCLE || left.shapeType == SHAPE_CIRCLE) {
+                // Circle presets - balanced randomization
+                randomLimits.sizeMin = 0.1f; randomLimits.sizeMax = 2.5f;
+                randomLimits.speedMin = 20.0f; randomLimits.speedMax = 200.0f;
+                randomLimits.txMin = -0.8f; randomLimits.txMax = 0.8f;
+                randomLimits.tyMin = -0.8f; randomLimits.tyMax = 0.8f;
+                randomLimits.sxMin = 0.3f; randomLimits.sxMax = 2.0f;
+                randomLimits.syMin = 0.3f; randomLimits.syMax = 2.0f;
+            } else if (this->name.find("Túnel Psicodélico") != std::string::npos) {
+                // Tunnel preset - extreme randomization for psychedelic effect
+                randomLimits.sizeMin = 0.05f; randomLimits.sizeMax = 4.0f;
+                randomLimits.speedMin = 5.0f; randomLimits.speedMax = 800.0f;
+                randomLimits.txMin = -2.0f; randomLimits.txMax = 2.0f;
+                randomLimits.tyMin = -2.0f; randomLimits.tyMax = 2.0f;
+                randomLimits.sxMin = 0.1f; randomLimits.sxMax = 4.0f;
+                randomLimits.syMin = 0.1f; randomLimits.syMax = 4.0f;
+                randomLimits.segMin = 3; randomLimits.segMax = 128;
+            } else {
+                // Default randomization for other shapes
+                randomLimits.sizeMin = 0.05f; randomLimits.sizeMax = 2.0f;
+                randomLimits.speedMin = 30.0f; randomLimits.speedMax = 250.0f;
+                randomLimits.txMin = -1.0f; randomLimits.txMax = 1.0f;
+                randomLimits.tyMin = -1.0f; randomLimits.tyMax = 1.0f;
+                randomLimits.sxMin = 0.2f; randomLimits.sxMax = 2.5f;
+                randomLimits.syMin = 0.2f; randomLimits.syMax = 2.5f;
+            }
+            
+            // Enable all randomization flags for maximum variety
+            randomAffect.triSize = true;
+            randomAffect.rotationSpeed = true;
+            randomAffect.angle = true;
+            randomAffect.translateX = true;
+            randomAffect.translateY = true;
+            randomAffect.scaleX = true;
+            randomAffect.scaleY = true;
+            randomAffect.colorTop = true;
+            randomAffect.colorLeft = true;
+            randomAffect.colorRight = true;
+            randomAffect.shapeType = true;
+            randomAffect.nSegments = true;
+            randomAffect.groupAngle = true;
+            randomAffect.numCenter = true;
+            randomAffect.numRight = true;
+            randomAffect.numLeft = true;
+        }
     }
 };
 
@@ -1076,7 +1143,7 @@ std::vector<AnimationPreset> animationPresets = {
         // Left
         {SHAPE_CIRCLE, 6, 0.25f, 150.0f, -45.0f, 0.0f, 0.0f, 0.8f, 0.8f,
          ImVec4(0.2f, 0.2f, 1.0f, 1.0f), ImVec4(0.1f, 0.1f, 0.8f, 1.0f), ImVec4(0.0f, 0.0f, 0.6f, 1.0f), 24, false, 0.0f},
-        1.2f, true, false, true, 140.0f, 3 // Full Spectrum audio preset
+        1.2f, true, true, true, 140.0f, 3 // Full Spectrum audio preset
     },
     
     {
@@ -1091,7 +1158,7 @@ std::vector<AnimationPreset> animationPresets = {
         // Left
         {SHAPE_CIRCLE, 10, 0.15f, 100.0f, -30.0f, 0.0f, 0.0f, 1.0f, 1.0f,
          ImVec4(0.5f, 0.0f, 1.0f, 1.0f), ImVec4(0.4f, 0.0f, 0.8f, 1.0f), ImVec4(0.3f, 0.0f, 0.6f, 1.0f), 36, false, 0.0f},
-        1.5f, true, false, true, 120.0f, 2 // Mid Focus audio preset
+        1.5f, true, true, true, 120.0f, 2 // Mid Focus audio preset
     },
     
     {
@@ -1121,7 +1188,7 @@ std::vector<AnimationPreset> animationPresets = {
         // Left
         {SHAPE_LINE, 12, 0.08f, 160.0f, -45.0f, 0.0f, 0.0f, 1.8f, 0.4f,
          ImVec4(0.0f, 0.0f, 1.0f, 1.0f), ImVec4(0.0f, 0.0f, 0.8f, 1.0f), ImVec4(0.0f, 0.0f, 0.6f, 1.0f), 2, false, 0.0f},
-        1.0f, true, false, true, 160.0f, 4 // Full Spectrum audio preset
+        1.0f, true, true, true, 160.0f, 4 // Full Spectrum audio preset
     },
     
     {
@@ -1151,7 +1218,7 @@ std::vector<AnimationPreset> animationPresets = {
         // Left
         {SHAPE_TRIANGLE, 20, 0.06f, 130.0f, -60.0f, 0.0f, 0.0f, 1.1f, 1.1f,
          ImVec4(1.0f, 0.0f, 0.8f, 1.0f), ImVec4(0.8f, 0.0f, 0.6f, 1.0f), ImVec4(0.6f, 0.0f, 0.4f, 1.0f), 3, false, 0.0f},
-        1.6f, true, false, true, 110.0f, 5 // Treble Energy audio preset
+        1.6f, true, true, true, 110.0f, 5 // Treble Energy audio preset
     },
     
     {
@@ -1181,7 +1248,7 @@ std::vector<AnimationPreset> animationPresets = {
         // Left
         {SHAPE_LONG_LINES, 2, 0.04f, 280.0f, -60.0f, 0.0f, 0.0f, 2.5f, 0.25f,
          ImVec4(0.5f, 0.0f, 1.0f, 1.0f), ImVec4(0.4f, 0.0f, 0.8f, 1.0f), ImVec4(0.3f, 0.0f, 0.6f, 1.0f), 10, false, 0.0f},
-        1.2f, true, false, true, 180.0f, 5 // Treble Energy audio preset
+        1.2f, true, true, true, 180.0f, 5 // Treble Energy audio preset
     },
     
     {
@@ -1212,6 +1279,21 @@ std::vector<AnimationPreset> animationPresets = {
         {SHAPE_CIRCLE, 35, 0.07f, 32.0f, -45.0f, 0.0f, 0.0f, 0.5f, 0.5f,
          ImVec4(0.8f, 0.2f, 1.0f, 1.0f), ImVec4(0.6f, 0.1f, 0.8f, 1.0f), ImVec4(0.4f, 0.0f, 0.6f, 1.0f), 14, false, 0.0f},
         0.8f, true, true, true, 60.0f, 0 // Bass Dominant audio preset
+    },
+    
+    {
+        "Túnel Psicodélico",
+        "Túnel infinito con figuras que aparecen y desaparecen",
+        // Center - Múltiples formas que cambian
+        {SHAPE_TRIANGLE, 15, 0.15f, 120.0f, 0.0f, 0.0f, 0.0f, 1.2f, 1.2f,
+         ImVec4(1.0f, 0.0f, 1.0f, 1.0f), ImVec4(0.8f, 0.0f, 0.8f, 1.0f), ImVec4(0.6f, 0.0f, 0.6f, 1.0f), 3, true, 3.5f},
+        // Right - Líneas que fluyen
+        {SHAPE_LINE, 20, 0.08f, 180.0f, 60.0f, 0.0f, 0.0f, 2.5f, 0.3f,
+         ImVec4(0.0f, 1.0f, 1.0f, 1.0f), ImVec4(0.0f, 0.8f, 0.8f, 1.0f), ImVec4(0.0f, 0.6f, 0.6f, 1.0f), 2, false, 0.0f},
+        // Left - Círculos que pulsan
+        {SHAPE_CIRCLE, 25, 0.12f, 90.0f, -60.0f, 0.0f, 0.0f, 0.8f, 0.8f,
+         ImVec4(1.0f, 1.0f, 0.0f, 1.0f), ImVec4(0.8f, 0.8f, 0.0f, 1.0f), ImVec4(0.6f, 0.6f, 0.0f, 1.0f), 32, false, 0.0f},
+        2.0f, true, true, true, 140.0f, 6 // Chaos Mode audio preset
     }
 };
 
@@ -1363,7 +1445,44 @@ int main() {
     // Variables para randomización más natural
     static float lastRandomizeTime[3] = {0.0f, 0.0f, 0.0f}; // Tiempo de última randomización por grupo
     static float randomizeIntervals[3] = {2.0f, 3.0f, 2.5f}; // Intervalos diferentes por grupo
+    
+    // Auto-randomization variables
+    static bool autoRandomizePresets = false;
+    static float lastPresetRandomizeTime = 0.0f;
+    static float presetRandomizeInterval = 5.0f; // 5 seconds
+    static bool randomizeOnlyFractals = false;
+    static bool randomizeOnlyLines = false;
+    static bool randomizeOnlyCylinders = false;
     static float randomizeVariation[3] = {0.5f, 0.8f, 0.6f}; // Variación en los intervalos
+
+    // --- NUEVO: Modo Fractal Toggle ---
+    static bool fractalToggleMode = false;
+    static float fractalToggleInterval = 1.5f; // 1.5 segundos
+    static float lastFractalToggleTime = 0.0f;
+    static bool fractalToggleState = false; // true = fractal activo, false = fractal inactivo
+
+    // --- NUEVO: Efecto Glitch ---
+    static bool glitchEffectEnabled = false;
+    static float glitchIntensity = 0.5f;
+    static float glitchFrequency = 0.1f; // Frecuencia del glitch
+    static float lastGlitchTime = 0.0f;
+    static float glitchDelay = 0.05f; // Delay del efecto glitch
+    static bool glitchActive = false;
+    static float glitchSplitRatio = 0.5f; // Ratio de división de objetos (0.5 = mitad)
+    static float glitchOffsetX = 0.0f;
+    static float glitchOffsetY = 0.0f;
+    static float glitchScaleX = 1.0f;
+    static float glitchScaleY = 1.0f;
+
+    // --- NUEVO: Randomización basada en frecuencias de música ---
+    static bool frequencyBasedRandomization = false;
+    static float bassRandomizationThreshold = 0.3f;
+    static float midRandomizationThreshold = 0.4f;
+    static float trebleRandomizationThreshold = 0.5f;
+    static float lastBassRandomizeTime = 0.0f;
+    static float lastMidRandomizeTime = 0.0f;
+    static float lastTrebleRandomizeTime = 0.0f;
+    static float frequencyRandomizeCooldown = 0.5f; // Cooldown entre randomizaciones por frecuencia
 
     // 1. Parámetro de separación de grupos
     static float targetGroupSeparation = 1.0f;
@@ -1574,6 +1693,44 @@ int main() {
             ImGui::Text("basados en la figura seleccionada");
             ImGui::Text("✅ Todas las figuras son compatibles con fractales");
         }
+        
+        // --- NUEVO: Modo Fractal Toggle ---
+        ImGui::Separator();
+        ImGui::Text("=== MODO FRACTAL TOGGLE ===");
+        ImGui::Checkbox("Modo Fractal Toggle (1.5s)", &fractalToggleMode);
+        if (fractalToggleMode) {
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "🔄 Fractal se activa/desactiva cada 1.5 segundos");
+            ImGui::Text("Estado actual: %s", fractalToggleState ? "ACTIVO" : "INACTIVO");
+            ImGui::SliderFloat("Intervalo (segundos)", &fractalToggleInterval, 0.5f, 5.0f, "%.1f");
+        }
+        
+        // --- NUEVO: Efecto Glitch ---
+        ImGui::Separator();
+        ImGui::Text("=== EFECTO GLITCH ===");
+        ImGui::Checkbox("Efecto Glitch", &glitchEffectEnabled);
+        if (glitchEffectEnabled) {
+            ImGui::SliderFloat("Intensidad Glitch", &glitchIntensity, 0.1f, 2.0f, "%.2f");
+            ImGui::SliderFloat("Frecuencia Glitch", &glitchFrequency, 0.01f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Delay Glitch (ms)", &glitchDelay, 0.01f, 0.2f, "%.3f");
+            ImGui::SliderFloat("Ratio División", &glitchSplitRatio, 0.1f, 1.0f, "%.2f");
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "🎭 Efecto de división y delay de objetos");
+            ImGui::Text("Estado: %s", glitchActive ? "ACTIVO" : "INACTIVO");
+        }
+        
+        // --- NUEVO: Randomización basada en frecuencias ---
+        ImGui::Separator();
+        ImGui::Text("=== RANDOMIZACIÓN POR FRECUENCIAS ===");
+        ImGui::Checkbox("Randomización por Frecuencias", &frequencyBasedRandomization);
+        if (frequencyBasedRandomization) {
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "🎵 Randomización basada en frecuencias de música");
+            ImGui::SliderFloat("Umbral Bass", &bassRandomizationThreshold, 0.1f, 0.8f, "%.2f");
+            ImGui::SliderFloat("Umbral Mid", &midRandomizationThreshold, 0.1f, 0.8f, "%.2f");
+            ImGui::SliderFloat("Umbral Treble", &trebleRandomizationThreshold, 0.1f, 0.8f, "%.2f");
+            ImGui::SliderFloat("Cooldown (segundos)", &frequencyRandomizeCooldown, 0.1f, 2.0f, "%.1f");
+            ImGui::Text("Bass: %.2f | Mid: %.2f | Treble: %.2f", 
+                       currentAudio.bass, currentAudio.mid, currentAudio.treble);
+        }
+        
         ImGui::Separator();
         ImGui::Text("OpenGL: %s", (const char*)glGetString(GL_VERSION));
         ImGui::Text("GPU: %s", (const char*)glGetString(GL_RENDERER));
@@ -2520,12 +2677,27 @@ int main() {
                 }
             }
             
-            // Randomizar shapeType por grupo
+            // Randomizar shapeType por grupo - MEJORADO para más variedad
             static int tgtShapeType[3] = {obj.shapeType, obj.shapeType, obj.shapeType};
             if (shouldRandomize && randomAffect.shapeType) {
-                int min = randomLimits.shapeMin;
-                int max = randomLimits.shapeMax;
-                tgtShapeType[g] = min + rand() % (max - min + 1);
+                // Crear una distribución más interesante de tipos de formas
+                float shapeChoice = frand();
+                if (shapeChoice < 0.3f) {
+                    tgtShapeType[g] = SHAPE_TRIANGLE; // 30% triángulos
+                } else if (shapeChoice < 0.5f) {
+                    tgtShapeType[g] = SHAPE_SQUARE;   // 20% cuadrados
+                } else if (shapeChoice < 0.8f) {
+                    tgtShapeType[g] = SHAPE_CIRCLE;   // 30% círculos
+                } else if (shapeChoice < 0.95f) {
+                    tgtShapeType[g] = SHAPE_LINE;     // 15% líneas
+                } else {
+                    tgtShapeType[g] = SHAPE_LONG_LINES; // 5% líneas largas
+                }
+                
+                // Asegurar que no se repita el mismo tipo inmediatamente
+                if (tgtShapeType[g] == obj.shapeType) {
+                    tgtShapeType[g] = (obj.shapeType + 1) % SHAPE_COUNT;
+                }
             }
             obj.shapeType += (int)((tgtShapeType[g] - obj.shapeType) * randomLerpSpeed * audioRandomFactor + 0.5f);
             
@@ -2624,21 +2796,65 @@ int main() {
                     groups[g].groupAngle += (tgtGroupAngle[g] - groups[g].groupAngle) * adjustedLerpSpeed;
                 }
                 
-                // Randomizar cantidad de objetos por grupo - only if selected
-                if (shouldRandomize) {
-                    static int tgtNumObjects[3] = {groups[0].numObjects, groups[1].numObjects, groups[2].numObjects};
-                    if (randomAffect.numCenter && g == 0) {
-                        tgtNumObjects[g] = randomLimits.numCenterMin + rand() % (randomLimits.numCenterMax - randomLimits.numCenterMin + 1);
-                        groups[g].numObjects += (int)((tgtNumObjects[g] - groups[g].numObjects) * adjustedLerpSpeed + 0.5f);
-                    } else if (randomAffect.numRight && g == 1) {
-                        tgtNumObjects[g] = randomLimits.numRightMin + rand() % (randomLimits.numRightMax - randomLimits.numRightMin + 1);
-                        groups[g].numObjects += (int)((tgtNumObjects[g] - groups[g].numObjects) * adjustedLerpSpeed + 0.5f);
-                    } else if (randomAffect.numLeft && g == 2) {
-                        tgtNumObjects[g] = randomLimits.numLeftMin + rand() % (randomLimits.numLeftMax - randomLimits.numLeftMin + 1);
-                        groups[g].numObjects += (int)((tgtNumObjects[g] - groups[g].numObjects) * adjustedLerpSpeed + 0.5f);
+                            // Randomizar cantidad de objetos por grupo - only if selected
+            if (shouldRandomize) {
+                static int tgtNumObjects[3] = {groups[0].numObjects, groups[1].numObjects, groups[2].numObjects};
+                
+                // Configuración especial para el túnel psicodélico
+                bool isTunnelPreset = false;
+                for (const auto& preset : animationPresets) {
+                    if (preset.name.find("Túnel Psicodélico") != std::string::npos) {
+                        isTunnelPreset = true;
+                        break;
                     }
-                    groups[g].numObjects = std::max(0, std::min(100, groups[g].numObjects)); // Limitar a 0-100
                 }
+                
+                if (randomAffect.numCenter && g == 0) {
+                    if (isTunnelPreset) {
+                        // Para el túnel, cambios más dramáticos en la cantidad
+                        float tunnelChoice = frand();
+                        if (tunnelChoice < 0.3f) {
+                            tgtNumObjects[g] = 5 + rand() % 10; // 5-15 objetos
+                        } else if (tunnelChoice < 0.7f) {
+                            tgtNumObjects[g] = 20 + rand() % 30; // 20-50 objetos
+                        } else {
+                            tgtNumObjects[g] = 50 + rand() % 50; // 50-100 objetos
+                        }
+                    } else {
+                        tgtNumObjects[g] = randomLimits.numCenterMin + rand() % (randomLimits.numCenterMax - randomLimits.numCenterMin + 1);
+                    }
+                    groups[g].numObjects += (int)((tgtNumObjects[g] - groups[g].numObjects) * adjustedLerpSpeed + 0.5f);
+                } else if (randomAffect.numRight && g == 1) {
+                    if (isTunnelPreset) {
+                        float tunnelChoice = frand();
+                        if (tunnelChoice < 0.4f) {
+                            tgtNumObjects[g] = 8 + rand() % 12; // 8-20 objetos
+                        } else if (tunnelChoice < 0.8f) {
+                            tgtNumObjects[g] = 25 + rand() % 25; // 25-50 objetos
+                        } else {
+                            tgtNumObjects[g] = 60 + rand() % 40; // 60-100 objetos
+                        }
+                    } else {
+                        tgtNumObjects[g] = randomLimits.numRightMin + rand() % (randomLimits.numRightMax - randomLimits.numRightMin + 1);
+                    }
+                    groups[g].numObjects += (int)((tgtNumObjects[g] - groups[g].numObjects) * adjustedLerpSpeed + 0.5f);
+                } else if (randomAffect.numLeft && g == 2) {
+                    if (isTunnelPreset) {
+                        float tunnelChoice = frand();
+                        if (tunnelChoice < 0.4f) {
+                            tgtNumObjects[g] = 8 + rand() % 12; // 8-20 objetos
+                        } else if (tunnelChoice < 0.8f) {
+                            tgtNumObjects[g] = 25 + rand() % 25; // 25-50 objetos
+                        } else {
+                            tgtNumObjects[g] = 60 + rand() % 40; // 60-100 objetos
+                        }
+                    } else {
+                        tgtNumObjects[g] = randomLimits.numLeftMin + rand() % (randomLimits.numLeftMax - randomLimits.numLeftMin + 1);
+                    }
+                    groups[g].numObjects += (int)((tgtNumObjects[g] - groups[g].numObjects) * adjustedLerpSpeed + 0.5f);
+                }
+                groups[g].numObjects = std::max(0, std::min(100, groups[g].numObjects)); // Limitar a 0-100
+            }
             }
             // Si cambió el tamaño, los colores o la figura, recrear el shape
             float curColorTop[3] = {obj.colorTop.x, obj.colorTop.y, obj.colorTop.z};
@@ -2812,7 +3028,35 @@ int main() {
                     instance.angle = obj.angle;
                     instance.scaleX = obj.scaleX;
                     instance.scaleY = obj.scaleY;
-                    allInstances.push_back(instance);
+                    
+                    // --- NUEVO: Aplicar efecto glitch ---
+                    if (glitchEffectEnabled && glitchActive) {
+                        // Aplicar offset de glitch
+                        instance.offsetX += glitchOffsetX;
+                        instance.offsetY += glitchOffsetY;
+                        
+                        // Aplicar escala de glitch
+                        instance.scaleX *= glitchScaleX;
+                        instance.scaleY *= glitchScaleY;
+                        
+                        // Crear efecto de división: algunos objetos se dividen en dos
+                        if (frand() < glitchSplitRatio) {
+                            // Objeto original
+                            allInstances.push_back(instance);
+                            
+                            // Objeto dividido (con offset adicional)
+                            InstanceData splitInstance = instance;
+                            splitInstance.offsetX += (frand() - 0.5f) * glitchIntensity * 0.3f;
+                            splitInstance.offsetY += (frand() - 0.5f) * glitchIntensity * 0.3f;
+                            splitInstance.scaleX *= 0.7f; // Más pequeño
+                            splitInstance.scaleY *= 0.7f;
+                            allInstances.push_back(splitInstance);
+                        } else {
+                            allInstances.push_back(instance);
+                        }
+                    } else {
+                        allInstances.push_back(instance);
+                    }
                 }
             }
             
@@ -2953,6 +3197,175 @@ int main() {
 
         // AUDIO TEST MODE: Update test mode with current audio data
         audioTestMode.updateFromAudio(currentAudio);
+        
+        // --- NUEVO: Modo Fractal Toggle ---
+        if (fractalToggleMode && currentTime - lastFractalToggleTime >= fractalToggleInterval) {
+            fractalToggleState = !fractalToggleState;
+            fractalMode = fractalToggleState;
+            lastFractalToggleTime = currentTime;
+            
+            // Forzar regeneración de VBO cuando cambia el modo fractal
+            currentCachedVBO = nullptr;
+        }
+        
+        // --- NUEVO: Efecto Glitch ---
+        if (glitchEffectEnabled) {
+            // Calcular frecuencia del glitch basada en audio
+            float glitchFreq = glitchFrequency;
+            if (audioReactive) {
+                glitchFreq *= (1.0f + currentAudio.overall * 2.0f); // Más glitch con más audio
+            }
+            
+            // Activar glitch basado en frecuencia
+            if (currentTime - lastGlitchTime >= (1.0f / glitchFreq)) {
+                glitchActive = true;
+                lastGlitchTime = currentTime;
+                
+                // Calcular parámetros del glitch
+                glitchOffsetX = (frand() - 0.5f) * glitchIntensity * 0.5f;
+                glitchOffsetY = (frand() - 0.5f) * glitchIntensity * 0.5f;
+                glitchScaleX = 1.0f + (frand() - 0.5f) * glitchIntensity;
+                glitchScaleY = 1.0f + (frand() - 0.5f) * glitchIntensity;
+                
+                // Aplicar delay
+                std::this_thread::sleep_for(std::chrono::milliseconds((int)(glitchDelay * 1000)));
+            } else {
+                glitchActive = false;
+            }
+        }
+        
+        // --- NUEVO: Randomización basada en frecuencias de música ---
+        if (frequencyBasedRandomization && audioReactive) {
+            // Randomización por Bass
+            if (currentAudio.bass > bassRandomizationThreshold && 
+                currentTime - lastBassRandomizeTime >= frequencyRandomizeCooldown) {
+                // Randomizar parámetros basados en bass
+                for (int g = 0; g < 3; ++g) {
+                    if (randomAffect.triSize) {
+                        groups[g].objects[0].triSize = randomLimits.sizeMin + 
+                            frand() * (randomLimits.sizeMax - randomLimits.sizeMin);
+                    }
+                    if (randomAffect.rotationSpeed) {
+                        groups[g].objects[0].rotationSpeed = randomLimits.speedMin + 
+                            frand() * (randomLimits.speedMax - randomLimits.speedMin);
+                    }
+                }
+                lastBassRandomizeTime = currentTime;
+            }
+            
+            // Randomización por Mid
+            if (currentAudio.mid > midRandomizationThreshold && 
+                currentTime - lastMidRandomizeTime >= frequencyRandomizeCooldown) {
+                // Randomizar colores basados en mid
+                for (int g = 0; g < 3; ++g) {
+                    if (randomAffect.colorTop) {
+                        groups[g].objects[0].colorTop = ImVec4(frand(), frand(), frand(), 1.0f);
+                    }
+                    if (randomAffect.colorLeft) {
+                        groups[g].objects[0].colorLeft = ImVec4(frand(), frand(), frand(), 1.0f);
+                    }
+                    if (randomAffect.colorRight) {
+                        groups[g].objects[0].colorRight = ImVec4(frand(), frand(), frand(), 1.0f);
+                    }
+                }
+                lastMidRandomizeTime = currentTime;
+            }
+            
+            // Randomización por Treble
+            if (currentAudio.treble > trebleRandomizationThreshold && 
+                currentTime - lastTrebleRandomizeTime >= frequencyRandomizeCooldown) {
+                // Randomizar posición y escala basados en treble
+                for (int g = 0; g < 3; ++g) {
+                    if (randomAffect.translateX) {
+                        groups[g].objects[0].translateX = randomLimits.txMin + 
+                            frand() * (randomLimits.txMax - randomLimits.txMin);
+                    }
+                    if (randomAffect.translateY) {
+                        groups[g].objects[0].translateY = randomLimits.tyMin + 
+                            frand() * (randomLimits.tyMax - randomLimits.tyMin);
+                    }
+                    if (randomAffect.scaleX) {
+                        groups[g].objects[0].scaleX = randomLimits.sxMin + 
+                            frand() * (randomLimits.sxMax - randomLimits.sxMin);
+                    }
+                    if (randomAffect.scaleY) {
+                        groups[g].objects[0].scaleY = randomLimits.syMin + 
+                            frand() * (randomLimits.syMax - randomLimits.syMin);
+                    }
+                }
+                lastTrebleRandomizeTime = currentTime;
+            }
+        }
+        
+        // AUTO-RANDOMIZATION: Check if we need to randomize presets
+        // --- NUEVO: Usar randomización basada en frecuencias si está habilitada ---
+        float currentRandomizeInterval = presetRandomizeInterval;
+        if (frequencyBasedRandomization && audioReactive) {
+            // Calcular intervalo basado en la intensidad del audio
+            float audioIntensity = currentAudio.overall;
+            currentRandomizeInterval = 5.0f / (1.0f + audioIntensity * 3.0f); // 5s a ~1.25s
+            currentRandomizeInterval = std::max(0.5f, std::min(10.0f, currentRandomizeInterval)); // Limitar entre 0.5s y 10s
+        }
+        
+        if (autoRandomizePresets && currentTime - lastPresetRandomizeTime >= currentRandomizeInterval) {
+            // Create filtered list of presets based on options
+            std::vector<int> availablePresets;
+            for (int i = 0; i < animationPresets.size(); ++i) {
+                const AnimationPreset& preset = animationPresets[i];
+                bool includePreset = true;
+                
+                // Apply filters
+                if (randomizeOnlyFractals) {
+                    includePreset = preset.center.fractalMode || preset.right.fractalMode || preset.left.fractalMode;
+                } else if (randomizeOnlyLines) {
+                    includePreset = (preset.center.shapeType == SHAPE_LINE || preset.center.shapeType == SHAPE_LONG_LINES) ||
+                                   (preset.right.shapeType == SHAPE_LINE || preset.right.shapeType == SHAPE_LONG_LINES) ||
+                                   (preset.left.shapeType == SHAPE_LINE || preset.left.shapeType == SHAPE_LONG_LINES);
+                } else if (randomizeOnlyCylinders) {
+                    includePreset = (preset.center.shapeType == SHAPE_CIRCLE) ||
+                                   (preset.right.shapeType == SHAPE_CIRCLE) ||
+                                   (preset.left.shapeType == SHAPE_CIRCLE);
+                }
+                
+                if (includePreset) {
+                    availablePresets.push_back(i);
+                }
+            }
+            
+            // If no presets match the filter, use all presets
+            if (availablePresets.empty()) {
+                for (int i = 0; i < animationPresets.size(); ++i) {
+                    availablePresets.push_back(i);
+                }
+            }
+            
+            // Randomly select from filtered presets
+            int randomIndex = rand() % availablePresets.size();
+            int randomPresetIndex = availablePresets[randomIndex];
+            const AnimationPreset& randomPreset = animationPresets[randomPresetIndex];
+            
+            // Apply the random preset
+            randomPreset.apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation, randomLimits, randomAffect);
+            
+            // Apply audio preset if audio reactive
+            if (randomPreset.audioReactive && randomPreset.audioPresetIndex < audioPresets.size()) {
+                for (int g = 0; g < 3; ++g) {
+                    applyAudioPreset(audioGroups[g], audioPresets[randomPreset.audioPresetIndex]);
+                }
+            }
+            
+            // Set fractal mode if any group uses it
+            fractalMode = randomPreset.center.fractalMode || randomPreset.right.fractalMode || randomPreset.left.fractalMode;
+            if (fractalMode) {
+                fractalDepth = randomPreset.center.fractalDepth; // Use center as default
+            }
+            
+            // Force VBO regeneration
+            currentCachedVBO = nullptr;
+            
+            // Update last randomize time
+            lastPresetRandomizeTime = currentTime;
+        }
 
         // PRESETS WINDOW: Predefined animation configurations
         if (uiVisibility.showPresets) {
@@ -2962,6 +3375,195 @@ int main() {
             
             ImGui::Text("🌟 Presets Predefinidos");
             ImGui::Text("Selecciona una animación para aplicarla instantáneamente");
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "🎲 ¡Todos los presets incluyen randomización automática!");
+            ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.0f, 1.0f), "💡 La randomización se configura automáticamente según el tipo de preset");
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "🌀 ¡Nuevo! Preset 'Túnel Psicodélico' con randomización extrema");
+            
+            // Randomize presets button
+            if (ImGui::Button("🎲 Randomizar Presets Activos")) {
+                // Create filtered list of presets based on options
+                std::vector<int> availablePresets;
+                for (int i = 0; i < animationPresets.size(); ++i) {
+                    const AnimationPreset& preset = animationPresets[i];
+                    bool includePreset = true;
+                    
+                    // Apply filters
+                    if (randomizeOnlyFractals) {
+                        includePreset = preset.center.fractalMode || preset.right.fractalMode || preset.left.fractalMode;
+                    } else if (randomizeOnlyLines) {
+                        includePreset = (preset.center.shapeType == SHAPE_LINE || preset.center.shapeType == SHAPE_LONG_LINES) ||
+                                       (preset.right.shapeType == SHAPE_LINE || preset.right.shapeType == SHAPE_LONG_LINES) ||
+                                       (preset.left.shapeType == SHAPE_LINE || preset.left.shapeType == SHAPE_LONG_LINES);
+                    } else if (randomizeOnlyCylinders) {
+                        includePreset = (preset.center.shapeType == SHAPE_CIRCLE) ||
+                                       (preset.right.shapeType == SHAPE_CIRCLE) ||
+                                       (preset.left.shapeType == SHAPE_CIRCLE);
+                    }
+                    
+                    if (includePreset) {
+                        availablePresets.push_back(i);
+                    }
+                }
+                
+                // If no presets match the filter, use all presets
+                if (availablePresets.empty()) {
+                    for (int i = 0; i < animationPresets.size(); ++i) {
+                        availablePresets.push_back(i);
+                    }
+                }
+                
+                // Randomly select from filtered presets
+                int randomIndex = rand() % availablePresets.size();
+                int randomPresetIndex = availablePresets[randomIndex];
+                const AnimationPreset& randomPreset = animationPresets[randomPresetIndex];
+                
+                // Apply the random preset
+                randomPreset.apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation, randomLimits, randomAffect);
+                
+                // Apply audio preset if audio reactive
+                if (randomPreset.audioReactive && randomPreset.audioPresetIndex < audioPresets.size()) {
+                    for (int g = 0; g < 3; ++g) {
+                        applyAudioPreset(audioGroups[g], audioPresets[randomPreset.audioPresetIndex]);
+                    }
+                }
+                
+                // Set fractal mode if any group uses it
+                fractalMode = randomPreset.center.fractalMode || randomPreset.right.fractalMode || randomPreset.left.fractalMode;
+                if (fractalMode) {
+                    fractalDepth = randomPreset.center.fractalDepth; // Use center as default
+                }
+                
+                // Force VBO regeneration
+                currentCachedVBO = nullptr;
+                
+                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "✅ Preset aleatorio aplicado: %s", randomPreset.name.c_str());
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("🔄 Randomizar Cada 5s")) {
+                // Toggle auto-randomization
+                autoRandomizePresets = !autoRandomizePresets;
+                if (autoRandomizePresets) {
+                    lastPresetRandomizeTime = currentTime; // Reset timer
+                    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "🔄 Auto-randomización activada");
+                } else {
+                    ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "⏹️ Auto-randomización desactivada");
+                }
+            }
+            
+            // Show auto-randomization status
+            if (autoRandomizePresets) {
+                float timeUntilNext = presetRandomizeInterval - (currentTime - lastPresetRandomizeTime);
+                if (timeUntilNext < 0) timeUntilNext = 0;
+                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "⏱️ Próximo preset en: %.1fs", timeUntilNext);
+            }
+            
+            // Interval control
+            ImGui::SliderFloat("Intervalo (segundos)", &presetRandomizeInterval, 1.0f, 30.0f, "%.1f");
+            
+            // Randomization options
+            ImGui::Text("🎯 Opciones de Randomización:");
+            
+            ImGui::Checkbox("Solo Fractales", &randomizeOnlyFractals);
+            ImGui::SameLine();
+            ImGui::Checkbox("Solo Líneas", &randomizeOnlyLines);
+            ImGui::SameLine();
+            ImGui::Checkbox("Solo Cilindros", &randomizeOnlyCylinders);
+            
+            // Additional randomization features
+            if (ImGui::Button("🎲 Randomizar 3 Presets")) {
+                // Apply 3 random presets in sequence
+                for (int i = 0; i < 3; ++i) {
+                    // Create filtered list
+                    std::vector<int> availablePresets;
+                    for (int j = 0; j < animationPresets.size(); ++j) {
+                        const AnimationPreset& preset = animationPresets[j];
+                        bool includePreset = true;
+                        
+                        if (randomizeOnlyFractals) {
+                            includePreset = preset.center.fractalMode || preset.right.fractalMode || preset.left.fractalMode;
+                        } else if (randomizeOnlyLines) {
+                            includePreset = (preset.center.shapeType == SHAPE_LINE || preset.center.shapeType == SHAPE_LONG_LINES) ||
+                                           (preset.right.shapeType == SHAPE_LINE || preset.right.shapeType == SHAPE_LONG_LINES) ||
+                                           (preset.left.shapeType == SHAPE_LINE || preset.left.shapeType == SHAPE_LONG_LINES);
+                        } else if (randomizeOnlyCylinders) {
+                            includePreset = (preset.center.shapeType == SHAPE_CIRCLE) ||
+                                           (preset.right.shapeType == SHAPE_CIRCLE) ||
+                                           (preset.left.shapeType == SHAPE_CIRCLE);
+                        }
+                        
+                        if (includePreset) {
+                            availablePresets.push_back(j);
+                        }
+                    }
+                    
+                    if (availablePresets.empty()) {
+                        for (int j = 0; j < animationPresets.size(); ++j) {
+                            availablePresets.push_back(j);
+                        }
+                    }
+                    
+                    int randomIndex = rand() % availablePresets.size();
+                    int randomPresetIndex = availablePresets[randomIndex];
+                    const AnimationPreset& randomPreset = animationPresets[randomPresetIndex];
+                    
+                    // Apply the preset
+                    randomPreset.apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation, randomLimits, randomAffect);
+                    
+                    if (randomPreset.audioReactive && randomPreset.audioPresetIndex < audioPresets.size()) {
+                        for (int g = 0; g < 3; ++g) {
+                            applyAudioPreset(audioGroups[g], audioPresets[randomPreset.audioPresetIndex]);
+                        }
+                    }
+                    
+                    fractalMode = randomPreset.center.fractalMode || randomPreset.right.fractalMode || randomPreset.left.fractalMode;
+                    if (fractalMode) {
+                        fractalDepth = randomPreset.center.fractalDepth;
+                    }
+                }
+                
+                currentCachedVBO = nullptr;
+                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "✅ 3 presets aleatorios aplicados!");
+            }
+            
+            // Show statistics
+            int totalPresets = animationPresets.size();
+            int availablePresets = totalPresets;
+            
+            if (randomizeOnlyFractals || randomizeOnlyLines || randomizeOnlyCylinders) {
+                availablePresets = 0;
+                for (const auto& preset : animationPresets) {
+                    bool includePreset = true;
+                    
+                    if (randomizeOnlyFractals) {
+                        includePreset = preset.center.fractalMode || preset.right.fractalMode || preset.left.fractalMode;
+                    } else if (randomizeOnlyLines) {
+                        includePreset = (preset.center.shapeType == SHAPE_LINE || preset.center.shapeType == SHAPE_LONG_LINES) ||
+                                       (preset.right.shapeType == SHAPE_LINE || preset.right.shapeType == SHAPE_LONG_LINES) ||
+                                       (preset.left.shapeType == SHAPE_LINE || preset.left.shapeType == SHAPE_LONG_LINES);
+                    } else if (randomizeOnlyCylinders) {
+                        includePreset = (preset.center.shapeType == SHAPE_CIRCLE) ||
+                                       (preset.right.shapeType == SHAPE_CIRCLE) ||
+                                       (preset.left.shapeType == SHAPE_CIRCLE);
+                    }
+                    
+                    if (includePreset) {
+                        availablePresets++;
+                    }
+                }
+            }
+            
+            ImGui::Text("📊 Estadísticas: %d/%d presets disponibles", availablePresets, totalPresets);
+            
+            // Randomization info
+            ImGui::Separator();
+            ImGui::Text("🎲 Información de Randomización:");
+            ImGui::Text("• Fractales: Randomización extrema (más variación)");
+            ImGui::Text("• Líneas: Randomización moderada (movimiento fluido)");
+            ImGui::Text("• Círculos: Randomización balanceada (equilibrio)");
+            ImGui::Text("• Túnel Psicodélico: Randomización extrema (efecto psicodélico)");
+            ImGui::Text("• Otros: Randomización estándar (versatilidad)");
+            ImGui::Text("• Tipos de objetos: Cambian dinámicamente entre triángulos, cuadrados, círculos, líneas");
+            
             ImGui::Separator();
             
             // Display presets in a grid
@@ -2989,7 +3591,7 @@ int main() {
                 // Apply button
                 if (ImGui::Button(("Aplicar##" + std::to_string(i)).c_str())) {
                     // Apply the preset
-                    preset.apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation);
+                    preset.apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation, randomLimits, randomAffect);
                     
                     // Apply audio preset if audio reactive
                     if (preset.audioReactive && preset.audioPresetIndex < audioPresets.size()) {
@@ -3025,7 +3627,7 @@ int main() {
             
             if (ImGui::Button("🎯 Cilindros y Donas")) {
                 // Apply first two presets
-                animationPresets[0].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation);
+                animationPresets[0].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation, randomLimits, randomAffect);
                 for (int g = 0; g < 3; ++g) {
                     applyAudioPreset(audioGroups[g], audioPresets[3]); // Full Spectrum
                 }
@@ -3034,7 +3636,7 @@ int main() {
             ImGui::SameLine();
             
             if (ImGui::Button("✨ Fractales")) {
-                animationPresets[2].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation);
+                animationPresets[2].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation, randomLimits, randomAffect);
                 fractalMode = true;
                 fractalDepth = 4.0f;
                 for (int g = 0; g < 3; ++g) {
@@ -3045,7 +3647,7 @@ int main() {
             ImGui::SameLine();
             
             if (ImGui::Button("⚡ Líneas")) {
-                animationPresets[3].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation);
+                animationPresets[3].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation, randomLimits, randomAffect);
                 for (int g = 0; g < 3; ++g) {
                     applyAudioPreset(audioGroups[g], audioPresets[4]); // Full Spectrum
                 }
@@ -3054,7 +3656,7 @@ int main() {
             
             ImGui::SameLine();
             if (ImGui::Button("🌀 Vórtices")) {
-                animationPresets[9].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation);
+                animationPresets[9].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation, randomLimits, randomAffect);
                 fractalMode = true;
                 fractalDepth = 3.0f;
                 for (int g = 0; g < 3; ++g) {
@@ -3065,9 +3667,20 @@ int main() {
             
             ImGui::SameLine();
             if (ImGui::Button("🧠 Neural")) {
-                animationPresets[10].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation);
+                animationPresets[10].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation, randomLimits, randomAffect);
                 for (int g = 0; g < 3; ++g) {
                     applyAudioPreset(audioGroups[g], audioPresets[0]); // Bass Dominant
+                }
+                currentCachedVBO = nullptr;
+            }
+            
+            ImGui::SameLine();
+            if (ImGui::Button("🌀 Túnel")) {
+                animationPresets[11].apply(groups, autoRotate, randomize, audioReactive, bpm, groupSeparation, randomLimits, randomAffect);
+                fractalMode = true;
+                fractalDepth = 3.5f;
+                for (int g = 0; g < 3; ++g) {
+                    applyAudioPreset(audioGroups[g], audioPresets[6]); // Chaos Mode
                 }
                 currentCachedVBO = nullptr;
             }
@@ -3094,6 +3707,7 @@ int main() {
             ImGui::Text("💎 Cristales: Preset 7");
             ImGui::Text("🌀 Vórtices: Preset 9");
             ImGui::Text("🧠 Neural: Preset 10");
+            ImGui::Text("🌀 Túnel Psicodélico: Preset 11");
             
             ImGui::End();
         }

@@ -1,32 +1,32 @@
 {
     "animateColor": true,
-    "bpm": 151.1999969482422,
+    "bpm": 150.0,
     "colorLeft": [
-        0.2688339650630951,
-        0.24166452884674072,
-        0.9151723384857178
+        0.6876546144485474,
+        0.8433218598365784,
+        0.026600778102874756
     ],
     "colorRight": [
-        0.08045049756765366,
-        0.6703981757164001,
-        0.8592187166213989
+        0.9913698434829712,
+        0.3796253800392151,
+        0.1088172197341919
     ],
     "colorTop": [
-        0.9331899881362915,
-        0.22449925541877747,
-        0.08911187946796417
+        0.7691495418548584,
+        0.38867026567459106,
+        0.35777828097343445
     ],
     "customFps": 60,
     "fpsMode": 1,
-    "fractalDepth": 5.0,
-    "fractalMode": false,
-    "groupAngleCenter": 1.2403576374053955,
-    "groupAngleLeft": 3.016688346862793,
-    "groupAngleRight": 2.280715227127075,
-    "groupSeparation": 1.9060429334640503,
-    "numCenter": 55,
-    "numLeft": 74,
-    "numRight": 97,
+    "fractalDepth": 3.0,
+    "fractalMode": true,
+    "groupAngleCenter": 125.66370391845703,
+    "groupAngleLeft": 125.66370391845703,
+    "groupAngleRight": 125.66370391845703,
+    "groupSeparation": 0.34579530358314514,
+    "numCenter": 68,
+    "numLeft": 80,
+    "numRight": 68,
     "onlyRGB": false,
     "randomAffect": {
         "angle": true,
@@ -73,11 +73,11 @@
         "tyMin": -2.0
     },
     "randomize": true,
-    "rotationSpeed": 77.18014526367188,
-    "scaleX": 1.8643492460250854,
-    "scaleY": 4.015337944030762,
+    "rotationSpeed": 2000.0,
+    "scaleX": 10.0,
+    "scaleY": 10.0,
     "shapeType": 3,
-    "translateX": 0.004719927906990051,
-    "translateY": 0.860270619392395,
-    "triSize": 4.03377628326416
+    "translateX": 5.0,
+    "translateY": 5.0,
+    "triSize": 10.0
 }
