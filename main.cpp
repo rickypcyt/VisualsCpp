@@ -1356,7 +1356,6 @@ int main() {
     // Triángulo
     float triSize = 0.8f;
     float prevSize = triSize;
-    float angle = 0.0f;
     bool autoRotate = false;
     float rotationSpeed = 90.0f; // grados por segundo
     float lastTime = glfwGetTime();
@@ -1380,19 +1379,8 @@ int main() {
     float groupAngleCenter = 0.0f, groupAngleRight = 0.0f, groupAngleLeft = 0.0f;
     int numCenter = 1, numRight = 0, numLeft = 0;
     int shapeType = 0;
-    int nSegments = 3;
     // Declare randomLimits
     RandomLimits randomLimits;
-    // Objetivos random para suavidad
-    float targetTriSize = triSize;
-    float targetRotationSpeed = rotationSpeed;
-    float targetTranslateX = translateX, targetTranslateY = translateY;
-    float targetScaleX = scaleX, targetScaleY = scaleY;
-    ImVec4 targetColorTop = colorTop, targetColorLeft = colorLeft, targetColorRight = colorRight;
-    int targetNumCenter = numCenter, targetNumRight = numRight, targetNumLeft = numLeft;
-    int targetShapeType = shapeType;
-    float targetGroupAngleCenter = groupAngleCenter, targetGroupAngleRight = groupAngleRight, targetGroupAngleLeft = groupAngleLeft;
-    int targetNSegments = nSegments;
     GLuint shaderProgram = createShaderProgram(vertexShaderSource, fragmentShaderSource);
     
     // OPTIMIZATION: Remove old VAO/VBO variables - now using caching system
@@ -1429,8 +1417,23 @@ int main() {
         groups[g].targets.resize(MAX_OBJECTS);
     }
 
+    // Default startup preset: single centered triangle
+    // Ensure exactly one object in the center and none on sides
+    groups[0].numObjects = 1;
+    groups[1].numObjects = 0;
+    groups[2].numObjects = 0;
+    // Configure the center object as a triangle at the origin
+    groups[0].objects[0].shapeType = SHAPE_TRIANGLE;
+    groups[0].objects[0].translateX = 0.0f;
+    groups[0].objects[0].translateY = 0.0f;
+    groups[0].objects[0].scaleX = 1.0f;
+    groups[0].objects[0].scaleY = 1.0f;
+    groups[0].objects[0].triSize = 0.8f;
+    groups[0].objects[0].rotationSpeed = 0.0f;
+    groups[0].objects[0].angle = 0.0f;
+    groups[0].objects[0].nSegments = 3;
+
     // Variables globales para animación
-    bool autoGroupRotate = false;
 
     // 1. Flags de randomización por grupo
     // Variables para randomización por grupo (ahora manejadas por randomAffect)
@@ -1439,8 +1442,6 @@ int main() {
 
     // Declarar lambdas antes del bucle de randomización
     auto frand = []() { return static_cast<float>(rand())/RAND_MAX; };
-    auto near = [](float a, float b, float eps=0.01f) { return fabs(a-b) < eps; };
-    auto nearInt = [](int a, int b) { return a == b; };
     
     // Variables para randomización más natural
     static float lastRandomizeTime[3] = {0.0f, 0.0f, 0.0f}; // Tiempo de última randomización por grupo
@@ -2321,15 +2322,7 @@ int main() {
             
             // Controles de FFT para optimización
             ImGui::Text("🎛️ Ajustes de FFT:");
-            static int currentFftSize = audioFftSize;
-            static const char* fftSizes[] = {"256", "512", "1024", "2048", "4096"};
-            static int fftSizeIndex = 2; // 1024 por defecto
-            
-            if (ImGui::Combo("Tamaño FFT", &fftSizeIndex, fftSizes, IM_ARRAYSIZE(fftSizes))) {
-                currentFftSize = std::stoi(fftSizes[fftSizeIndex]);
-                // Nota: Para aplicar el cambio, necesitarías reinicializar el FFT
-                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "⚠️ Reinicia el audio para aplicar cambios");
-            }
+            // Ajuste duplicado eliminado para evitar variables sin uso; ver lógica más abajo
             
             ImGui::Text("Tamaño actual: %d", audioFftSize);
             ImGui::Text("Frecuencia de muestreo: %d Hz", audioSampleRate);
@@ -2404,7 +2397,6 @@ int main() {
         // --- Procesamiento de audio y FFT ---
         static int prevFftSize = audioFftSize;
         static int currentFftSize = audioFftSize;
-        static const char* fftSizes[] = {"256", "512", "1024", "2048", "4096"};
         static int fftSizeIndex = 2; // 1024 por defecto
         // UI FFT size selection (already present in audio graph window)
         // If user changes FFT size, reinitialize audio and FFT
@@ -3011,10 +3003,7 @@ int main() {
                 VisualObjectParams& obj = groups[g].objects[0];
                 float baseX = (g == 0) ? 0.0f : (g == 1) ? groupSeparation : -groupSeparation;
                 
-                // CENTERED RENDERING: Scale positions to fit within screen bounds
-                float screenAspect = (float)width / (float)height;
-                float maxX = 1.0f; // 80% of screen width
-                float maxY = 1.0f; // 80% of screen height
+                // CENTERED RENDERING
                 
                 for (int i = 0; i < groups[g].numObjects; ++i) {
                     float theta = (2.0f * 3.14159265f * i) / std::max(1, groups[g].numObjects) + groups[g].groupAngle;
