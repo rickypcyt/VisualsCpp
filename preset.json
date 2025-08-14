@@ -2,31 +2,31 @@
     "animateColor": true,
     "bpm": 150.0,
     "colorLeft": [
-        0.6876546144485474,
-        0.8433218598365784,
-        0.026600778102874756
+        0.21481037139892578,
+        0.04542333260178566,
+        0.9029685258865356
     ],
     "colorRight": [
-        0.9913698434829712,
-        0.3796253800392151,
-        0.1088172197341919
+        0.030730552971363068,
+        0.573523759841919,
+        0.673788845539093
     ],
     "colorTop": [
-        0.7691495418548584,
-        0.38867026567459106,
-        0.35777828097343445
+        0.5555154085159302,
+        0.3786088526248932,
+        0.5522163510322571
     ],
     "customFps": 60,
-    "fpsMode": 1,
+    "fpsMode": 0,
     "fractalDepth": 3.0,
-    "fractalMode": true,
-    "groupAngleCenter": 125.66370391845703,
-    "groupAngleLeft": 125.66370391845703,
-    "groupAngleRight": 125.66370391845703,
-    "groupSeparation": 0.34579530358314514,
-    "numCenter": 68,
-    "numLeft": 80,
-    "numRight": 68,
+    "fractalMode": false,
+    "groupAngleCenter": 2.339545488357544,
+    "groupAngleLeft": 4.784675598144531,
+    "groupAngleRight": 0.08553418517112732,
+    "groupSeparation": 0.4755694568157196,
+    "numCenter": 1,
+    "numLeft": 1,
+    "numRight": 1,
     "onlyRGB": false,
     "randomAffect": {
         "angle": true,
@@ -35,9 +35,9 @@
         "colorTop": true,
         "groupAngle": true,
         "nSegments": true,
-        "numCenter": true,
-        "numLeft": true,
-        "numRight": true,
+        "numCenter": false,
+        "numLeft": false,
+        "numRight": false,
         "rotationSpeed": true,
         "scaleX": true,
         "scaleY": true,
@@ -73,11 +73,11 @@
         "tyMin": -2.0
     },
     "randomize": true,
-    "rotationSpeed": 2000.0,
-    "scaleX": 10.0,
-    "scaleY": 10.0,
+    "rotationSpeed": 789.5170288085938,
+    "scaleX": 3.916027069091797,
+    "scaleY": 2.76104998588562,
     "shapeType": 3,
-    "translateX": 5.0,
-    "translateY": 5.0,
-    "triSize": 10.0
+    "translateX": 1.6191723346710205,
+    "translateY": -1.8649709224700928,
+    "triSize": 1.4799085855484009
 }

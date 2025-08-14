@@ -21,10 +21,50 @@
 using json = nlohmann::json;
 
 #include <sstream>
+#include <string>
 #include <filesystem>
 #include "audio_capture.h"
 #include "src/audio_capture.h"
 #include "src/fft_utils.h"
+
+// Helper to find the latest saved preset file
+static std::string findLatestPresetPath() {
+    namespace fs = std::filesystem;
+    // Search in presets/ first, then current directory
+    const fs::path dirs[] = { fs::path("presets"), fs::path(".") };
+
+    fs::file_time_type latestTime{};
+    bool found = false;
+    fs::path latest;
+
+    for (const auto& dir : dirs) {
+        std::error_code ec;
+        if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec)) continue;
+        for (fs::directory_iterator it(dir, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+            const auto& entry = *it;
+            if (!entry.is_regular_file(ec)) continue;
+            const auto& p = entry.path();
+            const std::string ext = p.extension().string();
+            const std::string name = p.filename().string();
+            if (ext == ".json" && name.find("preset") != std::string::npos) {
+                std::error_code ec2;
+                auto t = fs::last_write_time(p, ec2);
+                if (ec2) continue;
+                if (!found || t > latestTime) {
+                    latestTime = t;
+                    latest = p;
+                    found = true;
+                }
+            }
+        }
+    }
+
+    if (found) return latest.string();
+
+    // Fallback to preset.json in cwd if present
+    if (std::filesystem::exists("preset.json")) return std::string("preset.json");
+    return std::string();
+}
 
 // Add shader sources - OPTIMIZED VERSION
 const char* vertexShaderSource = R"(
@@ -517,6 +557,14 @@ void renderBatch(CachedVBO* cached, const std::vector<InstanceData>& instances, 
             if (cached->shapeType == 1) drawMode = GL_TRIANGLE_STRIP;
             else if (cached->shapeType == 2) drawMode = GL_TRIANGLE_FAN;
             else if (cached->shapeType == 3 || cached->shapeType == 4) drawMode = GL_LINES;
+            
+            // Si dibujamos líneas, aplicar grosor y suavizado
+            if (drawMode == GL_LINES) {
+                glEnable(GL_LINE_SMOOTH);
+                glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
+                // Algunos drivers limitan ancho>1.0; usar 1.0-1.5 para consistencia
+                glLineWidth(1.25f);
+            }
             
             glDrawArraysInstanced(drawMode, 0, vertexCount, batchSize);
         }
@@ -1320,7 +1368,10 @@ int main() {
         return -1;
     }
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(0); // FPS ilimitados
+    glfwSwapInterval(1); // V-Sync activado (60 FPS típicamente)
+    glEnable(GL_MULTISAMPLE); // Habilitar MSAA
+    glEnable(GL_BLEND);       // Habilitar blending
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glewExperimental = GL_TRUE;
     if (glewInit() != GLEW_OK) {
@@ -1329,6 +1380,8 @@ int main() {
     }
     glViewport(0, 0, width, height);
     glEnable(GL_MULTISAMPLE); // Habilitar MSAA
+    glEnable(GL_BLEND);       // Habilitar blending para suavizado
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     // OPTIMIZATION: Initialize VBO caching system
     prepareInstanceBuffer();
@@ -1376,6 +1429,8 @@ int main() {
     bool randomize = false;
     // Objetivos de randomización
     float randomLerpSpeed = 0.01f;
+    // Modo rendimiento para máximo FPS
+    static bool performanceMode = false;
     float groupAngleCenter = 0.0f, groupAngleRight = 0.0f, groupAngleLeft = 0.0f;
     int numCenter = 1, numRight = 0, numLeft = 0;
     int shapeType = 0;
@@ -1403,8 +1458,13 @@ int main() {
     bool fractalMode = false;
     float fractalDepth = 3.0f;
 
-    // Al iniciar el programa, intenta cargar preset.json
-    loadPreset("preset.json", triSize, rotationSpeed, translateX, translateY, scaleX, scaleY, colorTop, colorLeft, colorRight, numCenter, numRight, numLeft, shapeType, groupAngleCenter, groupAngleRight, groupAngleLeft, randomize, randomLimits, randomAffect, groupSeparation, onlyRGB, animateColor, bpm, fpsMode, customFps, fractalMode, fractalDepth);
+    // Al iniciar el programa, intenta cargar el último preset guardado
+    {
+        std::string presetPath = findLatestPresetPath();
+        if (!presetPath.empty()) {
+            loadPreset(presetPath.c_str(), triSize, rotationSpeed, translateX, translateY, scaleX, scaleY, colorTop, colorLeft, colorRight, numCenter, numRight, numLeft, shapeType, groupAngleCenter, groupAngleRight, groupAngleLeft, randomize, randomLimits, randomAffect, groupSeparation, onlyRGB, animateColor, bpm, fpsMode, customFps, fractalMode, fractalDepth);
+        }
+    }
 
     // Grupos: centro, derecha, izquierda
     VisualGroup groups[3]; // 0: centro, 1: derecha, 2: izquierda
@@ -1421,10 +1481,11 @@ int main() {
     // Ensure exactly one object in the center and none on sides
     groups[0].numObjects = 1;
     groups[1].numObjects = 0;
-    groups[2].numObjects = 0;
+    groups[0].numObjects = 1;
+    
     // Configure the center object as a triangle at the origin
     groups[0].objects[0].shapeType = SHAPE_TRIANGLE;
-    groups[0].objects[0].translateX = 0.0f;
+    groups[0].objects[0].translateX = 0.0f; // Base en 0; desplazamiento de -1.0 se aplica vía baseX
     groups[0].objects[0].translateY = 0.0f;
     groups[0].objects[0].scaleX = 1.0f;
     groups[0].objects[0].scaleY = 1.0f;
@@ -1548,6 +1609,28 @@ int main() {
         float deltaTime = currentTime - lastTime;
         lastTime = currentTime;
 
+        // Modo rendimiento: minimizar trabajo por frame
+        if (performanceMode) {
+            // Forzar ilimitado y sin VSync
+            if (fpsMode != FPS_UNLIMITED) {
+                fpsMode = FPS_UNLIMITED;
+            }
+            // Desactivar características costosas
+            audioReactive = false;
+            randomize = false;
+            glitchEffectEnabled = false;
+            fractalMode = false;
+            // Dibujar solo 1 figura en el centro
+            groups[0].numObjects = 1; groups[1].numObjects = 0; groups[2].numObjects = 0;
+            groups[0].objects[0].shapeType = SHAPE_TRIANGLE;
+            groups[0].objects[0].nSegments = 3;
+            groups[0].objects[0].translateX = 0.0f;
+            groups[0].objects[0].translateY = 0.0f;
+            groups[0].objects[0].scaleX = 1.0f;
+            groups[0].objects[0].scaleY = 1.0f;
+            groupSeparation = 1.0f;
+        }
+
         // --- BPM y fase de beat ---
         float beatPhase = fmod(currentTime * bpm / 60.0f, 1.0f); // 0..1
 
@@ -1562,10 +1645,12 @@ int main() {
             }
         }
 
-        // Start ImGui frame
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
+        // Start ImGui frame (omitir si modo rendimiento)
+        if (!performanceMode) {
+            ImGui_ImplOpenGL3_NewFrame();
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+        }
 
         // OPTIMIZATION: Reduce ImGui update frequency for better performance
         static float lastImGuiUpdate = 0.0f;
@@ -1575,7 +1660,7 @@ int main() {
         }
 
         // Ventana izquierda: controles principales + monitor de sistema + opciones globales
-        if (shouldUpdateImGui && uiVisibility.showMainControls) {
+        if (!performanceMode && shouldUpdateImGui && uiVisibility.showMainControls) {
             ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Once);
             ImGui::Begin("Triángulo (Opciones Globales) + Monitor del sistema");
             ImGui::SliderFloat("Tamaño", &groups[0].objects[0].triSize, 0.1f, 2.0f, "%.2f");
@@ -1589,7 +1674,8 @@ int main() {
                 ImGui::SliderInt("Custom FPS", &customFps, 10, 1000);
             }
             ImGui::Text("ESC para salir | H para ocultar/mostrar UI");
-            ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+            ImGui::Text("FPS(UI): %.1f", ImGui::GetIO().Framerate);
+            ImGui::Checkbox("Modo Rendimiento (ultra)", &performanceMode);
             ImGui::Separator();
             // Opciones Globales
             ImGui::Checkbox("Rotación automática", &autoRotate);
@@ -1625,7 +1711,7 @@ int main() {
         }
 
         // Ventana derecha: opciones avanzadas
-        if (uiVisibility.showAdvancedOptions) {
+        if (!performanceMode && uiVisibility.showAdvancedOptions) {
             ImGui::SetNextWindowPos(ImVec2(width - 350, 10), ImGuiCond_Always);
             ImGui::SetNextWindowSize(ImVec2(340, 0), ImGuiCond_Always);
             ImGui::Begin("Opciones Avanzadas");
@@ -1819,7 +1905,7 @@ int main() {
         }
 
         // Ventana randomización
-        if (uiVisibility.showRandomization) {
+        if (!performanceMode && uiVisibility.showRandomization) {
         ImGui::SetNextWindowPos(ImVec2(width - 350, height - 400), ImGuiCond_Once);
         ImGui::SetNextWindowSize(ImVec2(340, 390), ImGuiCond_Once);
         ImGui::Begin("Randomización");
@@ -2964,6 +3050,13 @@ int main() {
         // OPTIMIZATION: Prepare instance data for all groups
         std::vector<InstanceData> allInstances;
         allInstances.clear();
+        // Reserve capacity to reduce reallocations (consider glitch duplicates)
+        {
+            int estimated = 0;
+            for (int g = 0; g < 3; ++g) estimated += std::max(0, groups[g].numObjects);
+            if (glitchEffectEnabled) estimated *= 2; // aproximación
+            allInstances.reserve(std::max(estimated, 64));
+        }
         
         // AUDIO TEST MODE: Render single test triangle if enabled
         if (audioTestMode.enabled) {
@@ -2998,46 +3091,40 @@ int main() {
                 renderBatch(testVBO, allInstances, shaderProgram, (float)width / (float)height);
             }
         } else {
-            // Normal rendering for all groups
+            // Construir instancias para los 3 grupos con offsets solicitados
             for (int g = 0; g < 3; ++g) {
                 VisualObjectParams& obj = groups[g].objects[0];
-                float baseX = (g == 0) ? 0.0f : (g == 1) ? groupSeparation : -groupSeparation;
-                
-                // CENTERED RENDERING
-                
+                float baseX = 0.0f;
+                if (g == 0) baseX = -1.0f;           // Centro: -1.0 en X
+                else if (g == 1) baseX = groupSeparation; // Derecha: según separación
+                else baseX = -1.5f;                   // Izquierda: -1.5 en X
+
                 for (int i = 0; i < groups[g].numObjects; ++i) {
                     float theta = (2.0f * 3.14159265f * i) / std::max(1, groups[g].numObjects) + groups[g].groupAngle;
-                    float r = 1.0f; // Use full normalized space
+                    float r = 1.0f;
                     float tx = baseX + obj.translateX + r * cos(theta);
                     float ty = obj.translateY + r * sin(theta);
-                    
+
                     InstanceData instance;
                     instance.offsetX = tx;
                     instance.offsetY = ty;
                     instance.angle = obj.angle;
                     instance.scaleX = obj.scaleX;
                     instance.scaleY = obj.scaleY;
-                    
-                    // --- NUEVO: Aplicar efecto glitch ---
+
+                    // Aplicar glitch si corresponde
                     if (glitchEffectEnabled && glitchActive) {
-                        // Aplicar offset de glitch
                         instance.offsetX += glitchOffsetX;
                         instance.offsetY += glitchOffsetY;
-                        
-                        // Aplicar escala de glitch
                         instance.scaleX *= glitchScaleX;
                         instance.scaleY *= glitchScaleY;
-                        
-                        // Crear efecto de división: algunos objetos se dividen en dos
+
                         if (frand() < glitchSplitRatio) {
-                            // Objeto original
                             allInstances.push_back(instance);
-                            
-                            // Objeto dividido (con offset adicional)
                             InstanceData splitInstance = instance;
                             splitInstance.offsetX += (frand() - 0.5f) * glitchIntensity * 0.3f;
                             splitInstance.offsetY += (frand() - 0.5f) * glitchIntensity * 0.3f;
-                            splitInstance.scaleX *= 0.7f; // Más pequeño
+                            splitInstance.scaleX *= 0.7f;
                             splitInstance.scaleY *= 0.7f;
                             allInstances.push_back(splitInstance);
                         } else {
@@ -3048,7 +3135,7 @@ int main() {
                     }
                 }
             }
-            
+
             // OPTIMIZATION: Update cached VBO if needed
             float colors[9] = {colorTopArr[0], colorTopArr[1], colorTopArr[2],
                               colorLeftArr[0], colorLeftArr[1], colorLeftArr[2],
@@ -3087,14 +3174,22 @@ int main() {
             }
         }
 
-        // FPS custom: sleep si es necesario
+        // FPS custom: pacing preciso con steady_clock para evitar jitter
         if (fpsMode == FPS_CUSTOM && customFps > 0) {
-            float frameTime = 1.0f / (float)customFps;
-            float elapsed = glfwGetTime() - currentTime;
-            if (elapsed < frameTime) {
-                int ms = (int)((frameTime - elapsed) * 1000.0f);
-                if (ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+            using clock = std::chrono::steady_clock;
+            static clock::time_point nextFrame = clock::now();
+            static int lastTargetFps = 0;
+            int targetFps = std::max(1, customFps);
+            auto frameDur = std::chrono::duration<double>(1.0 / targetFps);
+
+            // Reiniciar la agenda si cambia el FPS objetivo o si vamos atrasados
+            if (lastTargetFps != targetFps || nextFrame <= clock::now()) {
+                nextFrame = clock::now() + std::chrono::duration_cast<clock::duration>(frameDur);
+                lastTargetFps = targetFps;
             }
+
+            std::this_thread::sleep_until(nextFrame);
+            nextFrame += std::chrono::duration_cast<clock::duration>(frameDur);
         }
 
         // AUDIO TEST MODE WINDOW: Para probar audio reactivo fácilmente
@@ -3701,9 +3796,11 @@ int main() {
             ImGui::End();
         }
 
-        // Render ImGui
-        ImGui::Render();
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        // Render ImGui (omitir en modo rendimiento)
+        if (!performanceMode) {
+            ImGui::Render();
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        }
 
         glfwSwapBuffers(window);
         glfwPollEvents();
